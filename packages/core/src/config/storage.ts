@@ -159,6 +159,10 @@ export class Storage {
     return path.join(Storage.getGlobalTempDir(), BIN_DIR_NAME);
   }
 
+  static getProjectLoopStateDir(): string {
+    return path.join(this.getGlobalGeminiDir(), 'loop-state');
+  }
+
   getGeminiDir(): string {
     return path.join(this.targetDir, GEMINI_DIR);
   }

@@ -312,3 +312,19 @@ export * from './voice/whisperTranscriptionProvider.js';
 export * from './voice/transcriptionFactory.js';
 export * from './voice/whisperModelManager.js';
 export { isBinaryAvailable } from './utils/binaryCheck.js';
+
+// Export loop tools, helpers, and scheduler
+export {
+  LoopTool,
+  buildFixedPrompt,
+  buildDynamicPrompt,
+} from './tools/loop.js';
+export { LoopStopTool, LoopStatusTool } from './tools/loopControl.js';
+export { parseLoopArgs, type ParsedLoopArgs } from './tools/loop-parser.js';
+export {
+  schedule as scheduleLoop,
+  loadState as loadLoopState,
+  saveState as saveLoopState,
+  clearState as clearLoopState,
+  type LoopState,
+} from './services/loopScheduler.js';

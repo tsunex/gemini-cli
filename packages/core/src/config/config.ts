@@ -48,6 +48,8 @@ import {
 import { WebSearchTool } from '../tools/web-search.js';
 import { AskUserTool } from '../tools/ask-user.js';
 import { UpdateTopicTool } from '../tools/topicTool.js';
+import { LoopTool } from '../tools/loop.js';
+import { LoopStopTool, LoopStatusTool } from '../tools/loopControl.js';
 import { TopicState } from './topicState.js';
 import { AgentTool } from '../agents/agent-tool.js';
 import { ExitPlanModeTool } from '../tools/exit-plan-mode.js';
@@ -902,6 +904,7 @@ export class Config implements McpContext, AgentLoopContext {
   private readonly extensionRegistryURI: string | undefined;
   private readonly truncateToolOutputThreshold: number;
   private compressionTruncationCounter = 0;
+  readonly _params: ConfigParameters;
   private initialized = false;
   private initPromise: Promise<void> | undefined;
   private mcpInitializationPromise: Promise<void> | null = null;
@@ -987,6 +990,7 @@ export class Config implements McpContext, AgentLoopContext {
   private approvedPlanPath: string | undefined;
 
   constructor(params: ConfigParameters) {
+    this._params = params;
     this._sessionId = params.sessionId;
     this.clientName = params.clientName;
     this._clientVersion = params.clientVersion ?? 'unknown';
@@ -4018,6 +4022,15 @@ export class Config implements McpContext, AgentLoopContext {
     );
     maybeRegister(AskUserTool, () =>
       registry.registerTool(new AskUserTool(this.messageBus)),
+    );
+    maybeRegister(LoopTool, () =>
+      registry.registerTool(new LoopTool(this, this.messageBus)),
+    );
+    maybeRegister(LoopStopTool, () =>
+      registry.registerTool(new LoopStopTool(this.messageBus)),
+    );
+    maybeRegister(LoopStatusTool, () =>
+      registry.registerTool(new LoopStatusTool(this.messageBus)),
     );
     if (this.getUseWriteTodos()) {
       maybeRegister(WriteTodosTool, () =>
