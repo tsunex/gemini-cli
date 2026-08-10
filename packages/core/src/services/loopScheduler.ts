@@ -9,6 +9,7 @@
 import { Storage } from '../config/storage.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { ApprovalMode } from '../policy/types.js';
 
 export interface LoopState {
   nextRun: number;
@@ -39,16 +40,32 @@ export function schedule(state: LoopState, config: Config): void {
   }
 
   timeoutId = setTimeout(async () => {
-    // Clone config for background session to avoid state pollution and locking
+    // Check if the loop has been stopped before executing
+    if (!fs.existsSync(getStatePath())) {
+      return;
+    }
+
+    // Clone config for background session and force YOLO mode to prevent interactive prompt leakage
     const params = config._params;
     const backgroundConfig = new Config({
       ...params,
+      approvalMode: ApprovalMode.YOLO, // Force auto-approval for silent background check
       sessionId: `background-loop-${Date.now()}`,
     });
 
     let accumulatedText = '';
     try {
+      fs.appendFileSync('trace.log', `[${Date.now()}] BG Loop: Start\n`);
       await backgroundConfig.initialize();
+      const authConfig = config.getContentGeneratorConfig();
+      if (authConfig && authConfig.authType) {
+        await backgroundConfig.refreshAuth(
+          authConfig.authType,
+          authConfig.apiKey,
+          authConfig.baseUrl,
+          authConfig.customHeaders,
+        );
+      }
       const session = new LegacyAgentSession({ config: backgroundConfig });
       const stream = session.sendStream({
         message: {
@@ -57,7 +74,15 @@ export function schedule(state: LoopState, config: Config): void {
       });
 
       for await (const event of stream) {
+        fs.appendFileSync(
+          'trace.log',
+          `[${Date.now()}] BG Loop: Event received: ${JSON.stringify(event)}\n`,
+        );
         if (event.type === 'message' && event.role === 'agent') {
+          fs.appendFileSync(
+            'trace.log',
+            `[${Date.now()}] BG Loop: Agent turn: ${JSON.stringify(event.content)}\n`,
+          );
           for (const part of event.content) {
             if (part.type === 'text') {
               accumulatedText += part.text;
@@ -66,6 +91,11 @@ export function schedule(state: LoopState, config: Config): void {
         }
       }
 
+      fs.appendFileSync(
+        'trace.log',
+        `[${Date.now()}] BG Loop: Stream finished. Result: ${accumulatedText}\n`,
+      );
+
       if (accumulatedText.trim()) {
         coreEvents.emit(CoreEvent.UserFeedback, {
           severity: 'info',
@@ -73,15 +103,27 @@ export function schedule(state: LoopState, config: Config): void {
         });
       }
 
-      const newState: LoopState = {
-        ...state,
-        nextRun: Date.now() + (state.intervalMs ?? 0),
-      };
-      schedule(newState, config);
+      // Check if the state file still exists before rescheduling (e.g. self-stopping called clearState)
+      if (fs.existsSync(getStatePath())) {
+        const newState: LoopState = {
+          ...state,
+          nextRun: Date.now() + (state.intervalMs ?? 0),
+        };
+        fs.appendFileSync(
+          'trace.log',
+          `[${Date.now()}] BG Loop: Rescheduling next run.\n`,
+        );
+        schedule(newState, config);
+      }
     } catch (e) {
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      fs.appendFileSync(
+        'trace.log',
+        `[${Date.now()}] BG Loop: CATCH BLOCK ERROR: ${errorMessage}\n`,
+      );
       coreEvents.emit(CoreEvent.UserFeedback, {
         severity: 'error',
-        message: `Error in loop execution: ${e instanceof Error ? e.message : String(e)}`,
+        message: `Error in loop execution: ${errorMessage}`,
       });
     }
   }, delay);
@@ -145,6 +187,10 @@ export function saveState(state: LoopState): void {
 }
 
 export function clearState(): void {
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    timeoutId = undefined;
+  }
   const statePath = getStatePath();
   if (fs.existsSync(statePath)) {
     fs.unlinkSync(statePath);

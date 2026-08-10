@@ -89,6 +89,7 @@ describe('loopScheduler', () => {
         sessionId: 'test-session',
       },
       initialize: vi.fn().mockResolvedValue(undefined),
+      getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
     } as unknown as Config;
 
     const events = [
@@ -143,6 +144,14 @@ describe('loopScheduler', () => {
       },
     });
 
+    // Check that the background config was instantiated with approvalMode: 'yolo' to isolate UI
+    const sessionCall = vi.mocked(LegacyAgentSession).mock.calls.at(-1);
+    expect(sessionCall).toBeDefined();
+    const passedConfig = sessionCall![0].config;
+    expect(passedConfig._params).toEqual(
+      expect.objectContaining({ approvalMode: 'yolo' }),
+    );
+
     expect(emitSpy).toHaveBeenCalledWith(
       'user-feedback',
       expect.objectContaining({
@@ -152,9 +161,14 @@ describe('loopScheduler', () => {
     );
 
     // Check that loop state is updated for next run
-    const loaded = loadState();
+    let loaded = loadState();
     expect(loaded).toBeDefined();
     expect(loaded!.nextRun).toBeGreaterThanOrEqual(Date.now() + interval);
+
+    // Ensure clearState clears memory timers and prevents rescheduling
+    clearState();
+    loaded = loadState();
+    expect(loaded).toBeUndefined();
   });
 
   it('should clear state on process exit signals', () => {

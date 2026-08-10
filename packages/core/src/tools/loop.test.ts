@@ -35,7 +35,7 @@ describe('LoopTools', () => {
     it('should generate buildPrompt instructions for standard run', async () => {
       const tool = new LoopTool(mockContext, mockMessageBus);
       const invocation = tool.createInvocation(
-        { toString: () => 'Verify database index structure' },
+        { args: 'Verify database index structure' },
         mockMessageBus,
       );
 
@@ -50,7 +50,7 @@ describe('LoopTools', () => {
     it('should schedule background loop if background flag is present', async () => {
       const tool = new LoopTool(mockContext, mockMessageBus);
       const invocation = tool.createInvocation(
-        { toString: () => '-i 10m --background Analyze resource consumption' },
+        { args: '-i 10m --background Analyze resource consumption' },
         mockMessageBus,
       );
 

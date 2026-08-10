@@ -20,21 +20,41 @@ const MAINTENANCE_PROMPT = 'This is a maintenance prompt.';
 const DYNAMIC_MIN_DELAY = '1m';
 const DYNAMIC_MAX_DELAY = '5m';
 
-export class LoopTool extends BaseDeclarativeTool<object, ToolResult> {
+export class LoopTool extends BaseDeclarativeTool<
+  { args?: string },
+  ToolResult
+> {
   constructor(
     private readonly context: AgentLoopContext,
     messageBus: MessageBus,
   ) {
-    super('loop', 'Loop', 'A tool for looping.', Kind.Other, {}, messageBus);
+    super(
+      'loop',
+      'Loop',
+      'A tool for looping.',
+      Kind.Other,
+      {
+        properties: {
+          args: {
+            type: 'string',
+            description:
+              'Arguments for the loop, e.g., "-i 30s -b My prompt" or "stop" or "status"',
+          },
+        },
+        type: 'OBJECT',
+      },
+      messageBus,
+    );
   }
 
   createInvocation(
-    params: object,
+    params: { args?: string },
     messageBus: MessageBus,
     _toolName?: string,
     _toolDisplayName?: string,
-  ): ToolInvocation<object, ToolResult> {
-    const parsed = parseLoopArgs(params.toString());
+  ): ToolInvocation<{ args?: string }, ToolResult> {
+    const argsString = params.args ?? '';
+    const parsed = parseLoopArgs(argsString);
     const config = this.context.config;
 
     if (parsed.background) {
@@ -71,8 +91,8 @@ export class LoopTool extends BaseDeclarativeTool<object, ToolResult> {
 }
 
 class LoopToolInvocation
-  extends BaseToolInvocation<object, ToolResult>
-  implements ToolInvocation<object, ToolResult>
+  extends BaseToolInvocation<{ args?: string }, ToolResult>
+  implements ToolInvocation<{ args?: string }, ToolResult>
 {
   constructor(
     private readonly result: ToolResult,
