@@ -1942,6 +1942,9 @@ export class Config implements McpContext, AgentLoopContext {
   }
 
   activateFallbackMode(model: string, failedModel?: string): void {
+    debugLogger.log(
+      `Model fallback activated: switching from ${failedModel ?? 'unknown'} to ${model}`,
+    );
     if (this.getActiveModel() !== model) {
       this.setModel(model, true);
     }
