@@ -215,11 +215,12 @@ Signal: Signal number or \`(none)\` if no signal was received.
   protected createInvocation(
     params: ToolParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _displayName?: string,
   ): ToolInvocation<ToolParams, ToolResult> {
     return new DiscoveredToolInvocation(
-      this.config,
+      config ?? this.config,
       this.originalName,
       _toolName ?? this.name,
       params,

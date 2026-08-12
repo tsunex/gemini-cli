@@ -32,6 +32,7 @@ import {
   GEN_AI_AGENT_NAME,
 } from '../telemetry/constants.js';
 import { AGENT_TOOL_NAME } from '../tools/tool-names.js';
+import type { Config } from '../config/config.js';
 
 /**
  * Maximum number of nested agent levels. A user-facing turn is at depth 0, the
@@ -107,6 +108,7 @@ export class AgentTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: { agent_name: string; prompt: string },
     messageBus: MessageBus,
+    _config: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<{ agent_name: string; prompt: string }, ToolResult> {

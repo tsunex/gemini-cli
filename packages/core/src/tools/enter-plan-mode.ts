@@ -49,15 +49,16 @@ export class EnterPlanModeTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: EnterPlanModeParams,
     messageBus: MessageBus,
-    toolName: string,
-    toolDisplayName: string,
+    config?: Config,
+    toolName?: string,
+    toolDisplayName?: string,
   ): EnterPlanModeInvocation {
     return new EnterPlanModeInvocation(
       params,
       messageBus,
-      toolName,
-      toolDisplayName,
-      this.config,
+      toolName ?? this.name,
+      toolDisplayName ?? this.displayName,
+      config ?? this.config,
     );
   }
 

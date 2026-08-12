@@ -25,7 +25,7 @@ function getStatePath(): string {
 }
 
 import { LegacyAgentSession } from '../agent/legacy-agent-session.js';
-import { Config } from '../config/config.js';
+import type { Config } from '../config/config.js';
 import { coreEvents, CoreEvent } from '../utils/events.js';
 
 let timeoutId: NodeJS.Timeout | undefined;
@@ -45,10 +45,7 @@ export function schedule(state: LoopState, config: Config): void {
       return;
     }
 
-    // Clone config for background session and force YOLO mode to prevent interactive prompt leakage
-    const params = config._params;
-    const backgroundConfig = new Config({
-      ...params,
+    const backgroundConfig = config.fork({
       approvalMode: ApprovalMode.YOLO, // Force auto-approval for silent background check
       sessionId: `background-loop-${Date.now()}`,
     });
@@ -56,17 +53,15 @@ export function schedule(state: LoopState, config: Config): void {
     let accumulatedText = '';
     try {
       fs.appendFileSync('trace.log', `[${Date.now()}] BG Loop: Start\n`);
-      await backgroundConfig.initialize();
-      const authConfig = config.getContentGeneratorConfig();
-      if (authConfig && authConfig.authType) {
-        await backgroundConfig.refreshAuth(
-          authConfig.authType,
-          authConfig.apiKey,
-          authConfig.baseUrl,
-          authConfig.customHeaders,
-        );
-      }
-      const session = new LegacyAgentSession({ config: backgroundConfig });
+
+      // Proactively initialize the client to prevent "Chat not initialized" errors in background loops
+      const client = backgroundConfig.getGeminiClient();
+      await client.initialize();
+
+      const session = new LegacyAgentSession({
+        config: backgroundConfig,
+        client,
+      });
       const stream = session.sendStream({
         message: {
           content: [{ type: 'text', text: state.prompt }],

@@ -11,10 +11,10 @@ import {
   BaseToolInvocation,
   Kind,
 } from './tools.js';
-import { schedule, type LoopState } from '../services/loopScheduler.js';
 import { parseLoopArgs, type ParsedLoopArgs } from './loop-parser.js';
 import { type MessageBus } from '../confirmation-bus/message-bus.js';
-import type { AgentLoopContext } from '../config/agent-loop-context.js';
+import { schedule, type LoopState } from '../services/loopScheduler.js';
+import { type Config } from '../config/config.js';
 
 const MAINTENANCE_PROMPT = 'This is a maintenance prompt.';
 const DYNAMIC_MIN_DELAY = '1m';
@@ -24,10 +24,7 @@ export class LoopTool extends BaseDeclarativeTool<
   { args?: string },
   ToolResult
 > {
-  constructor(
-    private readonly context: AgentLoopContext,
-    messageBus: MessageBus,
-  ) {
+  constructor(messageBus: MessageBus) {
     super(
       'loop',
       'Loop',
@@ -50,30 +47,33 @@ export class LoopTool extends BaseDeclarativeTool<
   createInvocation(
     params: { args?: string },
     messageBus: MessageBus,
+    config: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<{ args?: string }, ToolResult> {
     const argsString = params.args ?? '';
     const parsed = parseLoopArgs(argsString);
-    const config = this.context.config;
 
     if (parsed.background) {
       if (!parsed.intervalMs) {
-        // This should be a validation error.
         throw new Error('Interval is required for background loops.');
       }
-      const state: LoopState = {
-        nextRun: Date.now() + parsed.intervalMs,
-        mode: parsed.mode,
-        prompt: parsed.prompt ?? MAINTENANCE_PROMPT,
+
+      const commandToRun = parsed.prompt || MAINTENANCE_PROMPT;
+      const loopState: LoopState = {
+        nextRun: Date.now(),
+        mode: 'background',
+        prompt: commandToRun,
         intervalMs: parsed.intervalMs,
       };
-      schedule(state, config);
+
+      schedule(loopState, config);
+
       const result: ToolResult = {
-        llmContent: `Loop scheduled to run every ${parsed.interval}.`,
-        returnDisplay: `Loop scheduled to run every ${parsed.interval}.`,
+        llmContent: `Background loop for "${commandToRun}" started. It will run every ${parsed.interval}.`,
+        returnDisplay: `Background loop for "${commandToRun}" started.`,
       };
-      return new LoopToolInvocation(result, messageBus);
+      return new LoopToolInvocation(result, messageBus, params);
     }
 
     let prompt: string;
@@ -86,7 +86,7 @@ export class LoopTool extends BaseDeclarativeTool<
       llmContent: prompt,
       returnDisplay: prompt,
     };
-    return new LoopToolInvocation(result, messageBus);
+    return new LoopToolInvocation(result, messageBus, params);
   }
 }
 
@@ -97,8 +97,9 @@ class LoopToolInvocation
   constructor(
     private readonly result: ToolResult,
     messageBus: MessageBus,
+    params: { args?: string },
   ) {
-    super({}, messageBus);
+    super(params, messageBus);
   }
 
   getDescription(): string {

@@ -5,6 +5,7 @@
  */
 
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
+import type { Config } from '../config/config.js';
 import { WEB_SEARCH_TOOL_NAME, WEB_SEARCH_DISPLAY_NAME } from './tool-names.js';
 import type { GroundingMetadata } from '@google/genai';
 import {
@@ -242,11 +243,12 @@ export class WebSearchTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: WebSearchToolParams,
     messageBus: MessageBus,
+    _config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<WebSearchToolParams, WebSearchToolResult> {
     return new WebSearchToolInvocation(
-      this.context.config,
+      this.context,
       params,
       messageBus ?? this.messageBus,
       _toolName,

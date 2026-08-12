@@ -13,6 +13,7 @@ import {
 } from './tools.js';
 import { loadState, clearState } from '../services/loopScheduler.js';
 import { type MessageBus } from '../confirmation-bus/message-bus.js';
+import { type Config } from '../config/config.js';
 
 export class LoopStopTool extends BaseDeclarativeTool<object, ToolResult> {
   constructor(messageBus: MessageBus) {
@@ -29,6 +30,7 @@ export class LoopStopTool extends BaseDeclarativeTool<object, ToolResult> {
   createInvocation(
     params: object,
     messageBus: MessageBus,
+    _config: Config,
   ): ToolInvocation<object, ToolResult> {
     clearState();
     const result: ToolResult = {
@@ -54,6 +56,7 @@ export class LoopStatusTool extends BaseDeclarativeTool<object, ToolResult> {
   createInvocation(
     params: object,
     messageBus: MessageBus,
+    _config: Config,
   ): ToolInvocation<object, ToolResult> {
     const state = loadState();
     let status: string;

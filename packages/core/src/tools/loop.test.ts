@@ -8,8 +8,8 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { LoopTool } from './loop.js';
 import { LoopStopTool, LoopStatusTool } from './loopControl.js';
 import { type MessageBus } from '../confirmation-bus/message-bus.js';
-import type { AgentLoopContext } from '../config/agent-loop-context.js';
 import * as loopScheduler from '../services/loopScheduler.js';
+import { type Config } from '../config/config.js';
 
 vi.mock('../services/loopScheduler.js', () => ({
   schedule: vi.fn(),
@@ -18,25 +18,25 @@ vi.mock('../services/loopScheduler.js', () => ({
 }));
 
 describe('LoopTools', () => {
-  let mockContext: AgentLoopContext;
   let mockMessageBus: MessageBus;
+  let mockConfig: Config;
 
   beforeEach(() => {
-    mockContext = {
-      config: {
-        getGlobalGeminiDir: () => '/mock/dir',
-      },
-    } as unknown as AgentLoopContext;
     mockMessageBus = {} as unknown as MessageBus;
+    mockConfig = {
+      // Just mock the params needed for the tool
+      _params: {},
+    } as unknown as Config;
     vi.restoreAllMocks();
   });
 
   describe('LoopTool', () => {
     it('should generate buildPrompt instructions for standard run', async () => {
-      const tool = new LoopTool(mockContext, mockMessageBus);
+      const tool = new LoopTool(mockMessageBus);
       const invocation = tool.createInvocation(
         { args: 'Verify database index structure' },
         mockMessageBus,
+        mockConfig,
       );
 
       expect(invocation.getDescription()).toBe('Loop tool invocation');
@@ -48,16 +48,20 @@ describe('LoopTools', () => {
     });
 
     it('should schedule background loop if background flag is present', async () => {
-      const tool = new LoopTool(mockContext, mockMessageBus);
+      const tool = new LoopTool(mockMessageBus);
       const invocation = tool.createInvocation(
-        { args: '-i 10m --background Analyze resource consumption' },
+        {
+          args: '-i 10m --background Analyze resource consumption',
+        },
         mockMessageBus,
+        mockConfig,
       );
 
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
-      expect(result.returnDisplay).toBe('Loop scheduled to run every 10m.');
+      expect(result.returnDisplay).toContain('Background loop for');
+      expect(result.returnDisplay).toContain('started');
       expect(loopScheduler.schedule).toHaveBeenCalled();
     });
   });
@@ -65,7 +69,7 @@ describe('LoopTools', () => {
   describe('LoopStopTool', () => {
     it('should stop and clear loop state', async () => {
       const tool = new LoopStopTool(mockMessageBus);
-      const invocation = tool.createInvocation({}, mockMessageBus);
+      const invocation = tool.createInvocation({}, mockMessageBus, mockConfig);
 
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
@@ -85,7 +89,7 @@ describe('LoopTools', () => {
       });
 
       const tool = new LoopStatusTool(mockMessageBus);
-      const invocation = tool.createInvocation({}, mockMessageBus);
+      const invocation = tool.createInvocation({}, mockMessageBus, mockConfig);
 
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
@@ -99,7 +103,7 @@ describe('LoopTools', () => {
       vi.mocked(loopScheduler.loadState).mockReturnValue(undefined);
 
       const tool = new LoopStatusTool(mockMessageBus);
-      const invocation = tool.createInvocation({}, mockMessageBus);
+      const invocation = tool.createInvocation({}, mockMessageBus, mockConfig);
 
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,

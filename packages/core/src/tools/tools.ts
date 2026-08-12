@@ -22,6 +22,7 @@ import {
 } from '../confirmation-bus/types.js';
 import { ApprovalMode } from '../policy/types.js';
 import type { SubagentProgress } from '../agents/types.js';
+import type { Config } from '../config/config.js';
 
 /**
 /**
@@ -443,7 +444,7 @@ export interface ToolBuilder<
    * @param params The raw, untrusted parameters from the model.
    * @returns A valid `ToolInvocation` if successful. Throws an error if validation fails.
    */
-  build(params: TParams): ToolInvocation<TParams, TResult>;
+  build(params: TParams, config?: Config): ToolInvocation<TParams, TResult>;
 }
 
 /**
@@ -587,23 +588,28 @@ export abstract class DeclarativeTool<
    * @param params The raw, untrusted parameters from the model.
    * @returns A `ToolInvocation` instance.
    */
-  abstract build(params: TParams): ToolInvocation<TParams, TResult>;
+  abstract build(
+    params: TParams,
+    config?: Config,
+  ): ToolInvocation<TParams, TResult>;
 
   /**
    * A convenience method that builds and executes the tool in one step.
    * Throws an error if validation fails.
    * @param params The raw, untrusted parameters from the model.
    * @param signal AbortSignal for tool cancellation.
+   * @param config Optional configuration context.
    * @param updateOutput Optional callback to stream output.
    * @returns The result of the tool execution.
    */
   async buildAndExecute(
     params: TParams,
     signal: AbortSignal,
+    config?: Config,
     updateOutput?: (output: ToolLiveOutput) => void,
     options?: Omit<ExecuteOptions, 'abortSignal' | 'updateOutput'>,
   ): Promise<TResult> {
-    const invocation = this.build(params);
+    const invocation = this.build(params, config);
     return invocation.execute({
       ...options,
       abortSignal: signal,
@@ -618,9 +624,10 @@ export abstract class DeclarativeTool<
    */
   private silentBuild(
     params: TParams,
+    config?: Config,
   ): ToolInvocation<TParams, TResult> | Error {
     try {
-      return this.build(params);
+      return this.build(params, config);
     } catch (e) {
       if (e instanceof Error) {
         return e;
@@ -634,13 +641,15 @@ export abstract class DeclarativeTool<
    * Never throws.
    * @param params The raw, untrusted parameters from the model.
    * @param abortSignal a signal to abort.
+   * @param config Optional configuration context.
    * @returns The result of the tool execution.
    */
   async validateBuildAndExecute(
     params: TParams,
     abortSignal: AbortSignal,
+    config?: Config,
   ): Promise<ToolResult> {
-    const invocationOrError = this.silentBuild(params);
+    const invocationOrError = this.silentBuild(params, config);
     if (invocationOrError instanceof Error) {
       const errorMessage = invocationOrError.message;
       return {
@@ -680,7 +689,7 @@ export abstract class BaseDeclarativeTool<
   TParams extends object,
   TResult extends ToolResult,
 > extends DeclarativeTool<TParams, TResult> {
-  build(params: TParams): ToolInvocation<TParams, TResult> {
+  build(params: TParams, config?: Config): ToolInvocation<TParams, TResult> {
     const validationError = this.validateToolParams(params);
     if (validationError) {
       throw new Error(validationError);
@@ -688,6 +697,7 @@ export abstract class BaseDeclarativeTool<
     return this.createInvocation(
       params,
       this.messageBus,
+      config,
       this.name,
       this.displayName,
     );
@@ -713,6 +723,7 @@ export abstract class BaseDeclarativeTool<
   protected abstract createInvocation(
     params: TParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<TParams, TResult>;

@@ -17,6 +17,7 @@ import { READ_MCP_RESOURCE_DEFINITION } from './definitions/coreTools.js';
 import type { AgentLoopContext } from '../config/agent-loop-context.js';
 import { ToolErrorType } from './tool-error.js';
 import type { MCPResource } from '../resources/resource-registry.js';
+import type { Config } from '../config/config.js';
 
 export interface ReadMcpResourceParams {
   uri: string;
@@ -30,7 +31,7 @@ export class ReadMcpResourceTool extends BaseDeclarativeTool<
 
   constructor(
     private readonly context: AgentLoopContext,
-    messageBus: MessageBus,
+    _messageBus: MessageBus,
   ) {
     super(
       ReadMcpResourceTool.Name,
@@ -38,7 +39,7 @@ export class ReadMcpResourceTool extends BaseDeclarativeTool<
       READ_MCP_RESOURCE_DEFINITION.base.description!,
       Kind.Read,
       READ_MCP_RESOURCE_DEFINITION.base.parametersJsonSchema,
-      messageBus,
+      _messageBus,
       true,
       false,
     );
@@ -46,12 +47,12 @@ export class ReadMcpResourceTool extends BaseDeclarativeTool<
 
   protected createInvocation(
     params: ReadMcpResourceParams,
+    messageBus: MessageBus,
+    _config?: Config,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ): ReadMcpResourceToolInvocation {
-    return new ReadMcpResourceToolInvocation(
-      this.context,
-      params,
-      this.messageBus,
-    );
+    return new ReadMcpResourceToolInvocation(this.context, params, messageBus);
   }
 }
 

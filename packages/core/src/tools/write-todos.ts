@@ -17,6 +17,7 @@ import type { MessageBus } from '../confirmation-bus/message-bus.js';
 import { WRITE_TODOS_TOOL_NAME } from './tool-names.js';
 import { WRITE_TODOS_DEFINITION } from './definitions/coreTools.js';
 import { resolveToolDeclaration } from './definitions/resolver.js';
+import type { Config } from '../config/config.js';
 
 const TODO_STATUSES = [
   'pending',
@@ -131,6 +132,7 @@ export class WriteTodosTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: WriteTodosToolParams,
     messageBus: MessageBus,
+    _config: Config,
     _toolName?: string,
     _displayName?: string,
   ): ToolInvocation<WriteTodosToolParams, ToolResult> {

@@ -132,6 +132,8 @@ export * from './utils/sessionUtils.js';
 export * from './utils/cache.js';
 export * from './utils/markdownUtils.js';
 
+export { initializeLoopCycleListener } from './listeners/loopCycleListener.js';
+
 // Export services
 export * from './services/fileDiscoveryService.js';
 export * from './services/gitService.js';

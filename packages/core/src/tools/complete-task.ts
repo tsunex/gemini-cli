@@ -20,6 +20,7 @@ import { type OutputConfig } from '../agents/types.js';
 import { type z } from 'zod';
 import { type MessageBus } from '../confirmation-bus/message-bus.js';
 import { zodToJsonSchema } from 'zod-to-json-schema';
+import { type Config } from '../config/config.js';
 
 /**
  * Tool for signaling task completion and optionally returning structured output.
@@ -110,14 +111,15 @@ export class CompleteTaskTool<
   protected createInvocation(
     params: Record<string, unknown>,
     messageBus: MessageBus,
-    toolName: string,
-    toolDisplayName: string,
+    _config?: Config,
+    toolName?: string,
+    toolDisplayName?: string,
   ): CompleteTaskInvocation<TOutput> {
     return new CompleteTaskInvocation(
       params,
       messageBus,
-      toolName,
-      toolDisplayName,
+      toolName ?? this.name,
+      toolDisplayName ?? this.displayName,
       this.outputConfig,
       this.processOutput,
     );

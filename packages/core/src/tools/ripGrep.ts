@@ -727,14 +727,15 @@ export class RipGrepTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: RipGrepToolParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<RipGrepToolParams, ToolResult> {
     return new GrepToolInvocation(
-      this.config,
+      config ?? this.config,
       this.fileDiscoveryService,
       params,
-      messageBus ?? this.messageBus,
+      messageBus,
       _toolName,
       _toolDisplayName,
     );

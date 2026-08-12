@@ -70,7 +70,7 @@ describe('Circular Reference Handling', () => {
       request: mockRequest,
       response: mockResponse,
       tool,
-      invocation: tool.build({}),
+      invocation: tool.build({}, mockConfig),
       durationMs: 100,
     };
 
@@ -120,7 +120,7 @@ describe('Circular Reference Handling', () => {
       request: mockRequest,
       response: mockResponse,
       tool,
-      invocation: tool.build({}),
+      invocation: tool.build({}, mockConfig),
       durationMs: 100,
     };
 

@@ -376,11 +376,12 @@ export class GlobTool extends BaseDeclarativeTool<GlobToolParams, ToolResult> {
   protected createInvocation(
     params: GlobToolParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<GlobToolParams, ToolResult> {
     return new GlobToolInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       _toolName,

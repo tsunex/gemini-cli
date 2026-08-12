@@ -15,11 +15,12 @@ import {
   type ExecuteOptions,
 } from './tools.js';
 import { ToolErrorType } from './tool-error.js';
-import type { MessageBus } from '../confirmation-bus/message-bus.js';
+import { type MessageBus } from '../confirmation-bus/message-bus.js';
 import { QuestionType, type Question } from '../confirmation-bus/types.js';
 import { ASK_USER_TOOL_NAME, ASK_USER_DISPLAY_NAME } from './tool-names.js';
 import { ASK_USER_DEFINITION } from './definitions/coreTools.js';
 import { resolveToolDeclaration } from './definitions/resolver.js';
+import { type Config } from '../config/config.js';
 
 export interface AskUserParams {
   questions: Question[];
@@ -90,8 +91,9 @@ export class AskUserTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: AskUserParams,
     messageBus: MessageBus,
-    toolName: string,
-    toolDisplayName: string,
+    _config?: Config,
+    toolName?: string,
+    toolDisplayName?: string,
   ): AskUserInvocation {
     const unescape = (str: string): string =>
       str.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n');
@@ -130,8 +132,13 @@ export class AskUserTool extends BaseDeclarativeTool<
   override async validateBuildAndExecute(
     params: AskUserParams,
     abortSignal: AbortSignal,
+    config?: Config,
   ): Promise<ToolResult> {
-    const result = await super.validateBuildAndExecute(params, abortSignal);
+    const result = await super.validateBuildAndExecute(
+      params,
+      abortSignal,
+      config,
+    );
     if (
       result.error &&
       result.error.type === ToolErrorType.INVALID_TOOL_PARAMS

@@ -1224,7 +1224,7 @@ export class LocalAgentExecutor<TOutput extends z.ZodTypeAny> {
         const tool = this.toolRegistry.getTool(toolName);
         if (tool) {
           displayName = tool.displayName ?? toolName;
-          const invocation = tool.build(args);
+          const invocation = tool.build(args, this.context.config);
           description = invocation.getDescription();
         }
       } catch {

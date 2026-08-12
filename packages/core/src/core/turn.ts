@@ -489,7 +489,7 @@ export class Turn {
     if (tool) {
       let invocation;
       try {
-        invocation = tool.build(args);
+        invocation = tool.build(args, this.chat.context.config);
       } catch {
         // Ignore build errors for request display purposes
       }

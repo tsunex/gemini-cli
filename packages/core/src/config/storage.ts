@@ -51,6 +51,12 @@ export class Storage {
     return !!this.projectIdentifier;
   }
 
+  copyFrom(other: Storage): void {
+    this.projectIdentifier = other.projectIdentifier;
+    this.initPromise = other.initPromise;
+    this.customPlansDir = other.customPlansDir;
+  }
+
   static getGlobalGeminiDir(): string {
     const homeDir = homedir();
     if (!homeDir) {

@@ -86,7 +86,7 @@ export async function evaluateBeforeToolHook(
     if (modifiedInput) {
       modifiedArgs = modifiedInput;
       try {
-        newInvocation = tool.build(modifiedInput);
+        newInvocation = tool.build(modifiedInput, config);
       } catch (error) {
         return {
           status: 'error',

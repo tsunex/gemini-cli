@@ -1427,6 +1427,71 @@ export class Config implements McpContext, AgentLoopContext {
     this.modelRouterService = new ModelRouterService(this);
   }
 
+  /**
+   * Creates a new child Config instance for a separate, isolated session.
+   * It inherits most of the parent's initialized state, avoiding expensive
+   * re-initialization, but gets its own session-specific properties.
+   *
+   * @param overrides - Parameters to override for the child session.
+   * A new `sessionId` is strongly recommended.
+   */
+  fork(overrides: Partial<ConfigParameters>): Config {
+    if (!this.initialized) {
+      throw new Error('Cannot fork from an uninitialized Config.');
+    }
+
+    const childParams: ConfigParameters = {
+      ...this._params,
+      ...overrides,
+      // Ensure telemetry is not re-initialized for the child process.
+      telemetry: { ...this._params.telemetry, enabled: false },
+      // Prevent child from trying to re-init extensions/MCPs.
+      mcpServers: {},
+      enabledExtensions: [],
+      // The child will not run the full `initialize` so it won't create its own hooks.
+      hooks: {},
+      projectHooks: {},
+      // Start with a clean slate of disabled hooks for the child.
+      disabledHooks: [],
+    };
+
+    const child = new Config(childParams);
+
+    // Inherit initialized storage state synchronously from parent.
+    child.storage.copyFrom(this.storage);
+
+    // --- Inherit Initialized Services from parent ---
+    // These services are expensive to create or have global state.
+    child._toolRegistry = this._toolRegistry;
+    child._promptRegistry = this._promptRegistry;
+    child._resourceRegistry = this._resourceRegistry;
+    child.agentRegistry = this.agentRegistry;
+    child.skillManager = this.skillManager;
+    child.fileDiscoveryService = this.fileDiscoveryService;
+    child.gitService = this.gitService;
+    child.mcpClientManager = this.mcpClientManager;
+    child.workspaceContext = this.workspaceContext;
+    child.modelRouterService = this.modelRouterService;
+    child.memoryContextManager = this.memoryContextManager;
+
+    // --- Inherit Configuration-like properties ---
+    child.contentGeneratorConfig = this.contentGeneratorConfig;
+    child.contentGenerator = this.contentGenerator;
+    child.baseLlmClient = this.baseLlmClient;
+
+    // The child needs its own GeminiClient for isolated history.
+    child._geminiClient = new GeminiClient(child);
+    // It's safe to call initialize() on the new client; it just loads history.
+    // No need to await it here, as it will be awaited if history is accessed.
+    void child._geminiClient.initialize();
+
+    // Mark as initialized to bypass the full, expensive `initialize()` method.
+    child.initialized = true;
+    child.initPromise = Promise.resolve();
+
+    return child;
+  }
+
   get config(): Config {
     return this;
   }
@@ -4027,7 +4092,7 @@ export class Config implements McpContext, AgentLoopContext {
       registry.registerTool(new AskUserTool(this.messageBus)),
     );
     maybeRegister(LoopTool, () =>
-      registry.registerTool(new LoopTool(this, this.messageBus)),
+      registry.registerTool(new LoopTool(this.messageBus)),
     );
     maybeRegister(LoopStopTool, () =>
       registry.registerTool(new LoopStopTool(this.messageBus)),

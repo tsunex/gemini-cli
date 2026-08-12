@@ -186,11 +186,12 @@ export class ActivateSkillTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: ActivateSkillToolParams,
     messageBus: MessageBus,
+    config: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<ActivateSkillToolParams, ToolResult> {
     return new ActivateSkillToolInvocation(
-      this.config,
+      config,
       params,
       messageBus,
       _toolName,

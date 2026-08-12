@@ -93,7 +93,11 @@ describe('AgentTool', () => {
 
   it('should map prompt to objective for local agent', async () => {
     const params = { agent_name: 'TestLocalAgent', prompt: 'Do something' };
-    const invocation = tool['createInvocation'](params, mockMessageBus);
+    const invocation = tool['createInvocation'](
+      params,
+      mockMessageBus,
+      mockConfig,
+    );
 
     // Trigger deferred instantiation
     await invocation.shouldConfirmExecute(new AbortController().signal);
@@ -111,7 +115,11 @@ describe('AgentTool', () => {
       agent_name: 'TestRemoteAgent',
       prompt: 'Search something',
     };
-    const invocation = tool['createInvocation'](params, mockMessageBus);
+    const invocation = tool['createInvocation'](
+      params,
+      mockMessageBus,
+      mockConfig,
+    );
 
     // Trigger deferred instantiation
     await invocation.shouldConfirmExecute(new AbortController().signal);
@@ -127,13 +135,17 @@ describe('AgentTool', () => {
   it('should throw error for unknown subagent', () => {
     const params = { agent_name: 'UnknownAgent', prompt: 'Hello' };
     expect(() => {
-      tool['createInvocation'](params, mockMessageBus);
+      tool['createInvocation'](params, mockMessageBus, mockConfig);
     }).toThrow("Subagent 'UnknownAgent' not found.");
   });
 
   it('should map prompt to task and use BrowserAgentInvocation for browser agent', async () => {
     const params = { agent_name: BROWSER_AGENT_NAME, prompt: 'Open page' };
-    const invocation = tool['createInvocation'](params, mockMessageBus);
+    const invocation = tool['createInvocation'](
+      params,
+      mockMessageBus,
+      mockConfig,
+    );
 
     // Trigger deferred instantiation
     await invocation.shouldConfirmExecute(new AbortController().signal);
@@ -177,6 +189,7 @@ describe('AgentTool', () => {
       const invocation = scoped['createInvocation'](
         { agent_name: 'TestLocalAgent', prompt: 'Do something' },
         mockMessageBus,
+        mockConfig,
       );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
@@ -192,6 +205,7 @@ describe('AgentTool', () => {
         scoped['createInvocation'](
           { agent_name: 'TestRemoteAgent', prompt: 'Hello' },
           mockMessageBus,
+          mockConfig,
         ),
       ).toThrow(
         "Subagent 'TestRemoteAgent' is not available to this agent. Available subagents: TestLocalAgent.",
@@ -212,6 +226,7 @@ describe('AgentTool', () => {
       const invocation = nested['createInvocation'](
         { agent_name: 'TestLocalAgent', prompt: 'Do something' },
         mockMessageBus,
+        mockConfig,
       );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
@@ -228,6 +243,7 @@ describe('AgentTool', () => {
         nested['createInvocation'](
           { agent_name: 'TestLocalAgent', prompt: 'Do something' },
           mockMessageBus,
+          mockConfig,
         ),
       ).toThrow(`Maximum agent nesting depth (${MAX_AGENT_DEPTH}) reached`);
     });
@@ -236,6 +252,7 @@ describe('AgentTool', () => {
       const invocation = tool['createInvocation'](
         { agent_name: 'TestLocalAgent', prompt: 'Do something' },
         mockMessageBus,
+        mockConfig,
       );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
@@ -254,7 +271,11 @@ describe('AgentTool', () => {
         agent_name: 'TestLocalAgent',
         prompt: 'Do something',
       };
-      const invocation = tool['createInvocation'](params, mockMessageBus);
+      const invocation = tool['createInvocation'](
+        params,
+        mockMessageBus,
+        mockConfig,
+      );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
       expect(LocalSessionInvocation).toHaveBeenCalledWith(
@@ -277,7 +298,11 @@ describe('AgentTool', () => {
         agent_name: 'TestRemoteAgent',
         prompt: 'Search something',
       };
-      const invocation = tool['createInvocation'](params, mockMessageBus);
+      const invocation = tool['createInvocation'](
+        params,
+        mockMessageBus,
+        mockConfig,
+      );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
       expect(RemoteSessionInvocation).toHaveBeenCalledWith(
@@ -300,7 +325,11 @@ describe('AgentTool', () => {
         agent_name: 'TestLocalAgent',
         prompt: 'Do something',
       };
-      const localInv = tool['createInvocation'](localParams, mockMessageBus);
+      const localInv = tool['createInvocation'](
+        localParams,
+        mockMessageBus,
+        mockConfig,
+      );
       await localInv.shouldConfirmExecute(new AbortController().signal);
 
       expect(LocalSubagentInvocation).toHaveBeenCalled();
@@ -312,7 +341,11 @@ describe('AgentTool', () => {
         agent_name: 'TestRemoteAgent',
         prompt: 'Search',
       };
-      const remoteInv = tool['createInvocation'](remoteParams, mockMessageBus);
+      const remoteInv = tool['createInvocation'](
+        remoteParams,
+        mockMessageBus,
+        mockConfig,
+      );
       await remoteInv.shouldConfirmExecute(new AbortController().signal);
 
       expect(RemoteAgentInvocation).toHaveBeenCalled();
@@ -330,7 +363,11 @@ describe('AgentTool', () => {
         agent_name: 'TestLocalAgent',
         prompt: 'Do something',
       };
-      const invocation = tool['createInvocation'](params, mockMessageBus);
+      const invocation = tool['createInvocation'](
+        params,
+        mockMessageBus,
+        mockConfig,
+      );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
       expect(LocalSessionInvocation).toHaveBeenCalledWith(
@@ -352,7 +389,11 @@ describe('AgentTool', () => {
         agent_name: BROWSER_AGENT_NAME,
         prompt: 'Open page',
       };
-      const invocation = tool['createInvocation'](params, mockMessageBus);
+      const invocation = tool['createInvocation'](
+        params,
+        mockMessageBus,
+        mockConfig,
+      );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
       expect(BrowserAgentInvocation).toHaveBeenCalled();

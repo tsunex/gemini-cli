@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import type { Config } from '../config/config.js';
 import {
   type ToolConfirmationOutcome,
   BaseDeclarativeTool,
@@ -947,6 +948,7 @@ export class WebFetchTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: WebFetchToolParams,
     messageBus: MessageBus,
+    _config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<WebFetchToolParams, ToolResult> {

@@ -22,6 +22,7 @@ import type { CallableTool, FunctionCall, Part } from '@google/genai';
 import { ToolErrorType } from './tool-error.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
 import type { McpContext } from './mcp-client.js';
+import type { Config } from '../config/config.js';
 
 import { wrapUntrusted } from '../utils/textUtils.js';
 
@@ -430,6 +431,7 @@ export class DiscoveredMCPTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: ToolParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _displayName?: string,
   ): ToolInvocation<ToolParams, ToolResult> {
@@ -441,7 +443,7 @@ export class DiscoveredMCPTool extends BaseDeclarativeTool<
       messageBus,
       this.trust,
       params,
-      this.cliConfig,
+      config ?? this.cliConfig,
       this.description,
       this.parameterSchema,
       this._toolAnnotations,

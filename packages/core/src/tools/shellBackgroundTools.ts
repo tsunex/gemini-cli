@@ -18,6 +18,7 @@ import { ToolErrorType } from './tool-error.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
 import type { AgentLoopContext } from '../config/agent-loop-context.js';
 import { isNodeError } from '../utils/errors.js';
+import type { Config } from '../config/config.js';
 
 const MAX_BUFFER_LOAD_CAP_BYTES = 64 * 1024; // Safe 64KB buffer load Cap
 const DEFAULT_TAIL_LINES_COUNT = 100;
@@ -94,6 +95,7 @@ export class ListBackgroundProcessesTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: Record<string, never>,
     messageBus: MessageBus,
+    _config: Config,
   ) {
     return new ListBackgroundProcessesInvocation(
       this.context,
@@ -290,6 +292,7 @@ export class ReadBackgroundOutputTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: ReadBackgroundOutputParams,
     messageBus: MessageBus,
+    _config: Config,
   ) {
     return new ReadBackgroundOutputInvocation(
       this.context,

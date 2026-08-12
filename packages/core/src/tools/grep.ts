@@ -776,11 +776,12 @@ export class GrepTool extends BaseDeclarativeTool<GrepToolParams, ToolResult> {
   protected createInvocation(
     params: GrepToolParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<GrepToolParams, ToolResult> {
     return new GrepToolInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       _toolName,

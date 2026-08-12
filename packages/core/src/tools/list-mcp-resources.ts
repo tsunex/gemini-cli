@@ -16,6 +16,7 @@ import { LIST_MCP_RESOURCES_TOOL_NAME } from './tool-names.js';
 import { LIST_MCP_RESOURCES_DEFINITION } from './definitions/coreTools.js';
 import type { AgentLoopContext } from '../config/agent-loop-context.js';
 import { ToolErrorType } from './tool-error.js';
+import type { Config } from '../config/config.js';
 
 export interface ListMcpResourcesParams {
   serverName?: string;
@@ -29,7 +30,7 @@ export class ListMcpResourcesTool extends BaseDeclarativeTool<
 
   constructor(
     private readonly context: AgentLoopContext,
-    messageBus: MessageBus,
+    _messageBus: MessageBus,
   ) {
     super(
       ListMcpResourcesTool.Name,
@@ -37,7 +38,7 @@ export class ListMcpResourcesTool extends BaseDeclarativeTool<
       LIST_MCP_RESOURCES_DEFINITION.base.description!,
       Kind.Search,
       LIST_MCP_RESOURCES_DEFINITION.base.parametersJsonSchema,
-      messageBus,
+      _messageBus,
       true,
       false,
     );
@@ -45,12 +46,12 @@ export class ListMcpResourcesTool extends BaseDeclarativeTool<
 
   protected createInvocation(
     params: ListMcpResourcesParams,
+    messageBus: MessageBus,
+    _config?: Config,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ): ListMcpResourcesToolInvocation {
-    return new ListMcpResourcesToolInvocation(
-      this.context,
-      params,
-      this.messageBus,
-    );
+    return new ListMcpResourcesToolInvocation(this.context, params, messageBus);
   }
 }
 
