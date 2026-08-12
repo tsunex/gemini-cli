@@ -222,6 +222,39 @@ describe('useQuotaAndFallback', () => {
       await promise!;
     });
 
+    it('should auto-retry and switch model immediately on capacity exhaustion TerminalQuotaError without displaying a dialog', async () => {
+      const { result } = await renderHook(() =>
+        useQuotaAndFallback({
+          config: mockConfig,
+          historyManager: mockHistoryManager,
+          userTier: UserTierId.FREE,
+          setModelSwitchedFromQuotaError: mockSetModelSwitchedFromQuotaError,
+          onShowAuthSelection: mockOnShowAuthSelection,
+          paidTier: null,
+          settings: mockSettings,
+        }),
+      );
+
+      const handler = setFallbackHandlerSpy.mock
+        .calls[0][0] as FallbackModelHandler;
+
+      const error = new TerminalQuotaError(
+        'Capacity exhausted',
+        mockGoogleApiError,
+        undefined,
+        'MODEL_CAPACITY_EXHAUSTED',
+      );
+
+      let intent: FallbackIntent | null = null;
+      await act(async () => {
+        intent = await handler('gemini-pro', 'gemini-flash', error);
+      });
+
+      expect(intent).toBe('retry_always');
+      expect(result.current.proQuotaRequest).toBeNull();
+      expect(mockSetModelSwitchedFromQuotaError).toHaveBeenCalledWith(true);
+    });
+
     describe('Interactive Fallback', () => {
       it('should set an interactive request for a terminal quota error', async () => {
         const { result } = await renderHook(() =>
