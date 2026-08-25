@@ -84,6 +84,15 @@ export function useQuotaAndFallback({
         : failedModel;
 
       if (error instanceof TerminalQuotaError) {
+        const isCapacityExhausted =
+          error.reason === 'MODEL_CAPACITY_EXHAUSTED' ||
+          error.reason === 'MODEL_CAPACITY_EXCEEDED';
+
+        if (isCapacityExhausted) {
+          setModelSwitchedFromQuotaError(true);
+          return 'retry_always';
+        }
+
         isTerminalQuotaError = true;
 
         const isInsufficientCredits = error.isInsufficientCredits;
