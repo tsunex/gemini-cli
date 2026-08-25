@@ -93,6 +93,7 @@ import {
   type InjectionSource,
   MessageBusType,
   type BackgroundNotificationMessage,
+  type LoopResultMessage,
 } from '@google/gemini-cli-core';
 import { validateAuthMethod } from '../config/auth.js';
 import process from 'node:process';
@@ -2172,10 +2173,38 @@ Logging in with Google... Restarting Gemini CLI to continue.
       );
     };
 
+    const handleLoopResult = async (event: LoopResultMessage) => {
+      const client = config.getGeminiClient();
+      if (client.isInitialized()) {
+        try {
+          await client.addHistory({
+            role: 'user',
+            parts: [
+              {
+                text: `System Note: A background loop completed with the result: "${event.content}"`,
+              },
+            ],
+          });
+        } catch (e) {
+          debugLogger.error('Failed to add loop result to model history:', e);
+        }
+      }
+
+      historyManager.addItem(
+        {
+          type: MessageType.INFO,
+          text: `[Loop Background Response]\n${event.content}`,
+        },
+        Date.now(),
+      );
+    };
+
     messageBus.subscribe(
       MessageBusType.BACKGROUND_NOTIFICATION,
       handleBackgroundNotification,
     );
+
+    messageBus.subscribe(MessageBusType.LOOP_RESULT, handleLoopResult);
 
     // Flush any messages that happened during startup before this component
     // mounted.
@@ -2188,6 +2217,7 @@ Logging in with Google... Restarting Gemini CLI to continue.
         MessageBusType.BACKGROUND_NOTIFICATION,
         handleBackgroundNotification,
       );
+      messageBus.unsubscribe(MessageBusType.LOOP_RESULT, handleLoopResult);
     };
   }, [historyManager, config]);
 

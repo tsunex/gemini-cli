@@ -27,6 +27,7 @@ export enum MessageBusType {
   ASK_USER_RESPONSE = 'ask-user-response',
   SUBAGENT_ACTIVITY = 'subagent-activity',
   BACKGROUND_NOTIFICATION = 'background-notification',
+  LOOP_RESULT = 'loop-result',
 }
 
 export interface ToolCallsUpdateMessage {
@@ -223,6 +224,11 @@ export interface BackgroundNotificationMessage {
   message: string;
 }
 
+export interface LoopResultMessage {
+  type: MessageBusType.LOOP_RESULT;
+  content: string;
+}
+
 export type Message =
   | ToolConfirmationRequest
   | ToolConfirmationResponse
@@ -234,4 +240,5 @@ export type Message =
   | AskUserResponse
   | ToolCallsUpdateMessage
   | SubagentActivityMessage
-  | BackgroundNotificationMessage;
+  | BackgroundNotificationMessage
+  | LoopResultMessage;

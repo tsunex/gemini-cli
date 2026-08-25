@@ -335,3 +335,4 @@ export {
   type LoopState,
 } from './services/loopScheduler.js';
 export * from './services/loopNotificationWatcher.js';
+export * from './utils/notificationClient.js';

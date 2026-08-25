@@ -33,6 +33,7 @@ function getLogPath(): string {
 import { LegacyAgentSession } from '../agent/legacy-agent-session.js';
 import type { Config } from '../config/config.js';
 import { coreEvents, CoreEvent } from '../utils/events.js';
+import { sendNotification } from '../utils/notificationClient.js';
 
 let timeoutId: NodeJS.Timeout | undefined;
 
@@ -99,40 +100,19 @@ export function schedule(state: LoopState, config: Config): void {
 
       if (accumulatedText.trim()) {
         try {
-          const notificationDir = path.join(
-            Storage.getProjectLoopStateDir(),
-            'notifications',
-          );
-          fs.mkdirSync(notificationDir, { recursive: true });
-          const notificationFile = path.join(
-            notificationDir,
-            `notify-${Date.now()}-${Math.random().toString(36).substring(2, 9)}.json`,
-          );
-          fs.writeFileSync(
-            notificationFile,
-            JSON.stringify(
-              {
-                timestamp: Date.now(),
-                prompt: state.prompt,
-                message: accumulatedText.trim(),
-              },
-              null,
-              2,
-            ),
-          );
+          const notification = {
+            type: 'loop_result',
+            content: accumulatedText.trim(),
+          };
+          await sendNotification(JSON.stringify(notification));
         } catch (err) {
           fs.appendFileSync(
             getLogPath(),
-            `[${Date.now()}] BG Loop: Failed to write notification file: ${
+            `[${Date.now()}] BG Loop: Failed to send notification: ${
               err instanceof Error ? err.message : String(err)
             }\n`,
           );
         }
-
-        coreEvents.emit(CoreEvent.UserFeedback, {
-          severity: 'info',
-          message: `[Loop Background Response]\n${accumulatedText.trim()}`,
-        });
       }
 
       // Check if the state file still exists before rescheduling (e.g. self-stopping called clearState)

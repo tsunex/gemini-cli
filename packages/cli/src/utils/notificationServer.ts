@@ -4,14 +4,29 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { type Config, MessageBusType, Storage } from '@google/gemini-cli-core';
+import {
+  type Config,
+  MessageBusType,
+  getSocketPath,
+} from '@google/gemini-cli-core';
 import * as net from 'node:net';
 import * as fs from 'node:fs';
-import * as path from 'node:path';
 import { registerCleanup } from './cleanup.js';
 
-function getSocketPath(storage: Storage): string {
-  return path.join(storage.getProjectTempDir(), 'notification.sock');
+interface LoopResultNotification {
+  type: 'loop_result';
+  content: string;
+}
+
+function isLoopResultNotification(obj: unknown): obj is LoopResultNotification {
+  return (
+    typeof obj === 'object' &&
+    obj !== null &&
+    'type' in obj &&
+    obj.type === 'loop_result' &&
+    'content' in obj &&
+    typeof obj.content === 'string'
+  );
 }
 
 export function startNotificationServer(config: Config) {
@@ -20,11 +35,24 @@ export function startNotificationServer(config: Config) {
 
   const server = net.createServer((socket) => {
     socket.on('data', (data) => {
-      const message = data.toString();
-      if (message) {
+      const rawMessage = data.toString();
+      if (rawMessage) {
+        try {
+          const parsed: unknown = JSON.parse(rawMessage);
+          if (isLoopResultNotification(parsed)) {
+            void messageBus.publish({
+              type: MessageBusType.LOOP_RESULT,
+              content: parsed.content,
+            });
+            return;
+          }
+        } catch {
+          // Ignore parse errors, fallback to legacy plain text
+        }
+
         void messageBus.publish({
           type: MessageBusType.BACKGROUND_NOTIFICATION,
-          message,
+          message: rawMessage,
         });
       }
     });
@@ -45,23 +73,4 @@ export function startNotificationServer(config: Config) {
   };
 
   registerCleanup(cleanup);
-}
-
-export async function sendNotification(message: string) {
-  const storage = new Storage(process.cwd());
-  await storage.initialize();
-  const socketPath = getSocketPath(storage);
-  const client = net.createConnection({ path: socketPath }, () => {
-    client.write(message);
-    client.end();
-  });
-
-  client.on('error', (err) => {
-    // Ignore ECONNREFUSED, it just means the server isn't running
-    if ('code' in err && err.code !== 'ECONNREFUSED') {
-      // In this client command, we don't want to spam the user's console
-      // with errors if the server isn't running. We can log to a debug file
-      // or just ignore. For now, we'll ignore.
-    }
-  });
 }
