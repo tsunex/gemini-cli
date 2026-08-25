@@ -638,9 +638,6 @@ export async function main() {
     // access to the project identifier.
     await config.storage.initialize();
 
-    // Start the notification server for background notifications
-    startNotificationServer(config);
-
     // 1. デーモン実行の割り込み (このプロセス自身がデーモンとして起動された場合)
     if (process.argv.includes('loop') && process.argv.includes('daemon')) {
       const { loadLoopState, scheduleLoop } = await import(
@@ -681,6 +678,9 @@ export async function main() {
       }
       return;
     }
+
+    // Start the notification server for background notifications (only on the main interactive CLI process)
+    startNotificationServer(config);
 
     // 2. オートスタートの処理 (デーモンが死んでいるがスケジュールが残っている場合、新デーモンを起動)
     const { loadLoopState, isLoopDaemonRunning, startLoopDaemon } =
