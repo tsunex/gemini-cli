@@ -91,6 +91,8 @@ import {
   ApiKeyUpdatedEvent,
   LegacyAgentProtocol,
   type InjectionSource,
+  MessageBusType,
+  type BackgroundNotificationMessage,
 } from '@google/gemini-cli-core';
 import { validateAuthMethod } from '../config/auth.js';
 import process from 'node:process';
@@ -2157,6 +2159,24 @@ Logging in with Google... Restarting Gemini CLI to continue.
     coreEvents.on(CoreEvent.UserFeedback, handleUserFeedback);
     coreEvents.on(CoreEvent.HookSystemMessage, handleHookSystemMessage);
 
+    const messageBus = config.getMessageBus();
+    const handleBackgroundNotification = (
+      event: BackgroundNotificationMessage,
+    ) => {
+      historyManager.addItem(
+        {
+          type: MessageType.INFO,
+          text: `🔔 ${event.message}`,
+        },
+        Date.now(),
+      );
+    };
+
+    messageBus.subscribe(
+      MessageBusType.BACKGROUND_NOTIFICATION,
+      handleBackgroundNotification,
+    );
+
     // Flush any messages that happened during startup before this component
     // mounted.
     coreEvents.drainBacklogs();
@@ -2164,8 +2184,12 @@ Logging in with Google... Restarting Gemini CLI to continue.
     return () => {
       coreEvents.off(CoreEvent.UserFeedback, handleUserFeedback);
       coreEvents.off(CoreEvent.HookSystemMessage, handleHookSystemMessage);
+      messageBus.unsubscribe(
+        MessageBusType.BACKGROUND_NOTIFICATION,
+        handleBackgroundNotification,
+      );
     };
-  }, [historyManager]);
+  }, [historyManager, config]);
 
   const nightly = props.version.includes('nightly');
 

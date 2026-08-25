@@ -26,6 +26,7 @@ export enum MessageBusType {
   ASK_USER_REQUEST = 'ask-user-request',
   ASK_USER_RESPONSE = 'ask-user-response',
   SUBAGENT_ACTIVITY = 'subagent-activity',
+  BACKGROUND_NOTIFICATION = 'background-notification',
 }
 
 export interface ToolCallsUpdateMessage {
@@ -217,6 +218,11 @@ export interface SubagentActivityMessage {
   activity: SubagentActivityItem;
 }
 
+export interface BackgroundNotificationMessage {
+  type: MessageBusType.BACKGROUND_NOTIFICATION;
+  message: string;
+}
+
 export type Message =
   | ToolConfirmationRequest
   | ToolConfirmationResponse
@@ -227,4 +233,5 @@ export type Message =
   | AskUserRequest
   | AskUserResponse
   | ToolCallsUpdateMessage
-  | SubagentActivityMessage;
+  | SubagentActivityMessage
+  | BackgroundNotificationMessage;

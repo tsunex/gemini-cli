@@ -90,6 +90,7 @@ import {
   SessionError,
   SessionSelector,
 } from './utils/sessionUtils.js';
+import { startNotificationServer } from './utils/notificationServer.js';
 
 import { relaunchOnExitCode } from './utils/relaunch.js';
 import { loadSandboxConfig } from './config/sandboxConfig.js';
@@ -625,7 +626,7 @@ export async function main() {
   // may have side effects.
   {
     const loadConfigHandle = startupProfiler.start('load_cli_config');
-    config = await loadCliConfig(settings.merged, sessionId, argv, {
+    const config = await loadCliConfig(settings.merged, sessionId, argv, {
       projectHooks: settings.workspace.settings.hooks,
       worktreeSettings: worktreeInfo,
       loadedSettings: settings,
@@ -637,6 +638,9 @@ export async function main() {
     // access to the project identifier.
     await config.storage.initialize();
 
+    // Start the notification server for background notifications
+    startNotificationServer(config);
+
     // 1. デーモン実行の割り込み (このプロセス自身がデーモンとして起動された場合)
     if (process.argv.includes('loop') && process.argv.includes('daemon')) {
       const { loadLoopState, scheduleLoop } = await import(
@@ -645,6 +649,26 @@ export async function main() {
       const state = loadLoopState();
       if (state) {
         state.pid = process.pid;
+        try {
+          const authType = await validateNonInteractiveAuth(
+            settings.merged.security.auth.selectedType,
+            settings.merged.security.auth.useExternal,
+            config,
+            settings,
+          );
+          await config.refreshAuth(authType);
+        } catch (e) {
+          const logPath = path.join(
+            Storage.getProjectLoopStateDir(),
+            'loop.log',
+          );
+          const fs = await import('node:fs');
+          fs.appendFileSync(
+            logPath,
+            `[${Date.now()}] Daemon auth refresh failed: ${e instanceof Error ? e.message : String(e)}\n`,
+          );
+        }
+        await config.initialize();
         scheduleLoop(state, config);
         const logPath = path.join(Storage.getProjectLoopStateDir(), 'loop.log');
         const fs = await import('node:fs');

@@ -254,12 +254,18 @@ export function startDaemon(state: LoopState, _config: Config): void {
   const nodeBin = process.argv[0];
   const scriptPath = process.argv[1];
 
+  // Filter out Gemini-specific environment variables to prevent session conflicts
+  const env: NodeJS.ProcessEnv = {};
+  for (const key in process.env) {
+    if (!key.startsWith('GEMINI_CLI_')) {
+      env[key] = process.env[key];
+    }
+  }
+
   const child = spawn(nodeBin, [scriptPath, 'loop', 'daemon'], {
     detached: true,
     stdio: 'ignore',
-    env: {
-      ...process.env,
-    },
+    env,
   });
 
   child.unref();

@@ -334,3 +334,4 @@ export {
   clearTimer as clearLoopTimer,
   type LoopState,
 } from './services/loopScheduler.js';
+export * from './services/loopNotificationWatcher.js';
