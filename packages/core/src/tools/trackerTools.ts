@@ -189,9 +189,13 @@ export class TrackerCreateTaskTool extends BaseDeclarativeTool<
       messageBus,
     );
   }
-  protected createInvocation(params: CreateTaskParams, messageBus: MessageBus) {
+  protected createInvocation(
+    params: CreateTaskParams,
+    messageBus: MessageBus,
+    config?: Config,
+  ) {
     return new TrackerCreateTaskInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       this.name,
@@ -275,9 +279,13 @@ export class TrackerUpdateTaskTool extends BaseDeclarativeTool<
       messageBus,
     );
   }
-  protected createInvocation(params: UpdateTaskParams, messageBus: MessageBus) {
+  protected createInvocation(
+    params: UpdateTaskParams,
+    messageBus: MessageBus,
+    config?: Config,
+  ) {
     return new TrackerUpdateTaskInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       this.name,
@@ -349,9 +357,13 @@ export class TrackerGetTaskTool extends BaseDeclarativeTool<
       messageBus,
     );
   }
-  protected createInvocation(params: GetTaskParams, messageBus: MessageBus) {
+  protected createInvocation(
+    params: GetTaskParams,
+    messageBus: MessageBus,
+    config?: Config,
+  ) {
     return new TrackerGetTaskInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       this.name,
@@ -439,9 +451,13 @@ export class TrackerListTasksTool extends BaseDeclarativeTool<
       messageBus,
     );
   }
-  protected createInvocation(params: ListTasksParams, messageBus: MessageBus) {
+  protected createInvocation(
+    params: ListTasksParams,
+    messageBus: MessageBus,
+    config?: Config,
+  ) {
     return new TrackerListTasksInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       this.name,
@@ -556,9 +572,10 @@ export class TrackerAddDependencyTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: AddDependencyParams,
     messageBus: MessageBus,
+    config?: Config,
   ) {
     return new TrackerAddDependencyInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       this.name,
@@ -680,9 +697,10 @@ export class TrackerVisualizeTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: Record<string, never>,
     messageBus: MessageBus,
+    config?: Config,
   ) {
     return new TrackerVisualizeInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       this.name,

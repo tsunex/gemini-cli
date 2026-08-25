@@ -303,11 +303,12 @@ export class ReadFileTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: ReadFileToolParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<ReadFileToolParams, ToolResult> {
     return new ReadFileToolInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       _toolName,

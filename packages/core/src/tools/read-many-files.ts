@@ -535,11 +535,12 @@ export class ReadManyFilesTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: ReadManyFilesParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<ReadManyFilesParams, ToolResult> {
     return new ReadManyFilesToolInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
       _toolName,

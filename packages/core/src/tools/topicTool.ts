@@ -128,12 +128,15 @@ export class UpdateTopicTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: UpdateTopicParams,
     messageBus: MessageBus,
+    config?: Config,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ): UpdateTopicInvocation {
     return new UpdateTopicInvocation(
       params,
       messageBus,
-      this.name,
-      this.config,
+      _toolName ?? this.name,
+      config ?? this.config,
     );
   }
 }

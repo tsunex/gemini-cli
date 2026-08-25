@@ -27,6 +27,7 @@ import {
 } from './tools.js';
 
 import { getErrorMessage } from '../utils/errors.js';
+import type { Config } from '../config/config.js';
 import { summarizeToolOutput } from '../utils/summarizer.js';
 import {
   ShellExecutionService,
@@ -1137,11 +1138,12 @@ export class ShellTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: ShellToolParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<ShellToolParams, ToolResult> {
     return new ShellToolInvocation(
-      this.context,
+      config ?? this.context.config,
       params,
       messageBus,
       _toolName,

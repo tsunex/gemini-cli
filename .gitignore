@@ -56,6 +56,7 @@ packages/cli/download-ripgrep*/
 gha-creds-*.json
 
 # Log files
+*.log
 patch_output.log
 gemini-debug.log
 

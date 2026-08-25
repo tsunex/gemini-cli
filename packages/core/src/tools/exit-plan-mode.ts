@@ -78,6 +78,7 @@ export class ExitPlanModeTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: ExitPlanModeParams,
     messageBus: MessageBus,
+    config: Config,
     toolName: string,
     toolDisplayName: string,
   ): ExitPlanModeInvocation {
@@ -86,7 +87,7 @@ export class ExitPlanModeTool extends BaseDeclarativeTool<
       messageBus,
       toolName,
       toolDisplayName,
-      this.config,
+      config,
     );
   }
 

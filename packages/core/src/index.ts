@@ -132,6 +132,8 @@ export * from './utils/sessionUtils.js';
 export * from './utils/cache.js';
 export * from './utils/markdownUtils.js';
 
+export { initializeLoopCycleListener } from './listeners/loopCycleListener.js';
+
 // Export services
 export * from './services/fileDiscoveryService.js';
 export * from './services/gitService.js';
@@ -312,3 +314,25 @@ export * from './voice/whisperTranscriptionProvider.js';
 export * from './voice/transcriptionFactory.js';
 export * from './voice/whisperModelManager.js';
 export { isBinaryAvailable } from './utils/binaryCheck.js';
+
+// Export loop tools, helpers, and scheduler
+export {
+  LoopTool,
+  buildFixedPrompt,
+  buildDynamicPrompt,
+} from './tools/loop.js';
+export { LoopStopTool, LoopStatusTool } from './tools/loopControl.js';
+export { parseLoopArgs, type ParsedLoopArgs } from './tools/loop-parser.js';
+export {
+  schedule as scheduleLoop,
+  loadState as loadLoopState,
+  saveState as saveLoopState,
+  clearState as clearLoopState,
+  startDaemon as startLoopDaemon,
+  stopDaemon as stopLoopDaemon,
+  isDaemonRunning as isLoopDaemonRunning,
+  clearTimer as clearLoopTimer,
+  type LoopState,
+} from './services/loopScheduler.js';
+export * from './services/loopNotificationWatcher.js';
+export * from './utils/notificationClient.js';

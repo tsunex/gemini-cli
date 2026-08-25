@@ -51,6 +51,12 @@ export class Storage {
     return !!this.projectIdentifier;
   }
 
+  copyFrom(other: Storage): void {
+    this.projectIdentifier = other.projectIdentifier;
+    this.initPromise = other.initPromise;
+    this.customPlansDir = other.customPlansDir;
+  }
+
   static getGlobalGeminiDir(): string {
     const homeDir = homedir();
     if (!homeDir) {
@@ -157,6 +163,10 @@ export class Storage {
 
   static getGlobalBinDir(): string {
     return path.join(Storage.getGlobalTempDir(), BIN_DIR_NAME);
+  }
+
+  static getProjectLoopStateDir(): string {
+    return path.join(this.getGlobalGeminiDir(), 'loop-state');
   }
 
   getGeminiDir(): string {

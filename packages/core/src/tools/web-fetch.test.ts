@@ -317,13 +317,13 @@ describe('WebFetchTool', () => {
         },
       ])('should throw if $name', ({ prompt, expectedError }) => {
         const tool = new WebFetchTool(mockConfig, bus);
-        expect(() => tool.build({ prompt })).toThrow(expectedError);
+        expect(() => tool.build({ prompt }, mockConfig)).toThrow(expectedError);
       });
 
       it('should pass if prompt contains at least one valid URL', () => {
         const tool = new WebFetchTool(mockConfig, bus);
         expect(() =>
-          tool.build({ prompt: 'fetch https://example.com' }),
+          tool.build({ prompt: 'fetch https://example.com' }, mockConfig),
         ).not.toThrow();
       });
     });
@@ -335,21 +335,23 @@ describe('WebFetchTool', () => {
 
       it('should throw if url is missing', () => {
         const tool = new WebFetchTool(mockConfig, bus);
-        expect(() => tool.build({ prompt: 'foo' })).toThrow(
+        expect(() => tool.build({ prompt: 'foo' }, mockConfig)).toThrow(
           "params must have required property 'url'",
         );
       });
 
       it('should throw if url is invalid', () => {
         const tool = new WebFetchTool(mockConfig, bus);
-        expect(() => tool.build({ url: 'not-a-url' })).toThrow(
+        expect(() => tool.build({ url: 'not-a-url' }, mockConfig)).toThrow(
           'Invalid URL: "not-a-url"',
         );
       });
 
       it('should pass if url is valid', () => {
         const tool = new WebFetchTool(mockConfig, bus);
-        expect(() => tool.build({ url: 'https://example.com' })).not.toThrow();
+        expect(() =>
+          tool.build({ url: 'https://example.com' }, mockConfig),
+        ).not.toThrow();
       });
     });
   });
@@ -382,7 +384,7 @@ describe('WebFetchTool', () => {
       });
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { prompt: 'fetch https://ratelimit.example.com' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
 
       // Execute 10 times to hit the limit
       for (let i = 0; i < 10; i++) {
@@ -406,7 +408,7 @@ describe('WebFetchTool', () => {
       const params = {
         prompt: 'fetch https://ratelimit-multi.com and https://healthy.com',
       };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
 
       // Hit rate limit for one host
       for (let i = 0; i < 10; i++) {
@@ -414,7 +416,7 @@ describe('WebFetchTool', () => {
           candidates: [{ content: { parts: [{ text: 'response' }] } }],
         });
         await tool
-          .build({ prompt: 'fetch https://ratelimit-multi.com' })
+          .build({ prompt: 'fetch https://ratelimit-multi.com' }, mockConfig)
           .execute({ abortSignal: new AbortController().signal });
       }
       // 11th call - should be rate limited and not use a mock
@@ -448,7 +450,7 @@ describe('WebFetchTool', () => {
         prompt:
           'fetch https://private.com and https://healthy.com and http://localhost',
       };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
 
       mockGenerateContent.mockResolvedValueOnce({
         candidates: [{ content: { parts: [{ text: 'healthy response' }] } }],
@@ -499,7 +501,7 @@ describe('WebFetchTool', () => {
       const params = {
         prompt: 'fetch https://url1.com and https://url2.com/',
       };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
@@ -534,7 +536,7 @@ describe('WebFetchTool', () => {
       const params = {
         prompt: 'fetch https://public.com/ and https://private.com',
       };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
@@ -551,7 +553,7 @@ describe('WebFetchTool', () => {
       mockFetch('https://public.ip/', new Error('fallback fetch failed'));
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { prompt: 'fetch https://public.ip' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
@@ -575,7 +577,7 @@ describe('WebFetchTool', () => {
 
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { prompt: 'fetch https://public.ip' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       await invocation.execute({ abortSignal: new AbortController().signal });
 
       expect(logWebFetchFallbackAttempt).toHaveBeenCalledWith(
@@ -643,7 +645,7 @@ describe('WebFetchTool', () => {
 
         const tool = new WebFetchTool(mockConfig, bus);
         const params = { prompt: 'fetch https://example.com' };
-        const invocation = tool.build(params);
+        const invocation = tool.build(params, mockConfig);
         const result = await invocation.execute({
           abortSignal: new AbortController().signal,
         });
@@ -679,7 +681,7 @@ describe('WebFetchTool', () => {
     it('should return confirmation details with the correct prompt and parsed urls', async () => {
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { prompt: 'fetch https://example.com' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const confirmationDetails = await invocation.shouldConfirmExecute(
         new AbortController().signal,
       );
@@ -697,7 +699,7 @@ describe('WebFetchTool', () => {
       vi.spyOn(mockConfig, 'getDirectWebFetch').mockReturnValue(true);
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { url: 'https://example.com' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const confirmationDetails = await invocation.shouldConfirmExecute(
         new AbortController().signal,
       );
@@ -717,7 +719,7 @@ describe('WebFetchTool', () => {
         prompt:
           'fetch https://github.com/google/gemini-react/blob/main/README.md',
       };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const confirmationDetails = await invocation.shouldConfirmExecute(
         new AbortController().signal,
       );
@@ -740,7 +742,7 @@ describe('WebFetchTool', () => {
       );
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { prompt: 'fetch https://example.com' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const confirmationDetails = await invocation.shouldConfirmExecute(
         new AbortController().signal,
       );
@@ -751,7 +753,7 @@ describe('WebFetchTool', () => {
     it('should NOT call setApprovalMode when onConfirm is called with ProceedAlways (now handled by scheduler)', async () => {
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { prompt: 'fetch https://example.com' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const confirmationDetails = await invocation.shouldConfirmExecute(
         new AbortController().signal,
       );
@@ -774,7 +776,10 @@ describe('WebFetchTool', () => {
   describe('getPolicyUpdateOptions', () => {
     it('should return empty object for any outcome to allow global approval', () => {
       const tool = new WebFetchTool(mockConfig, bus);
-      const invocation = tool.build({ prompt: 'fetch https://example.com' });
+      const invocation = tool.build(
+        { prompt: 'fetch https://example.com' },
+        mockConfig,
+      );
 
       expect(
         invocation.getPolicyUpdateOptions!(
@@ -797,7 +802,7 @@ describe('WebFetchTool', () => {
     const createToolWithMessageBus = (customBus?: MessageBus) => {
       const tool = new WebFetchTool(mockConfig, customBus ?? bus);
       const params = { prompt: 'fetch https://example.com' };
-      return { tool, invocation: tool.build(params) };
+      return { tool, invocation: tool.build(params, mockConfig) };
     };
 
     const simulateMessageBusResponse = (
@@ -976,7 +981,7 @@ describe('WebFetchTool', () => {
 
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { url: 'https://example.com' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
@@ -1007,7 +1012,7 @@ describe('WebFetchTool', () => {
 
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { url: 'https://example.com' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       await invocation.execute({ abortSignal: new AbortController().signal });
 
       expect(convert).toHaveBeenCalledWith(
@@ -1039,7 +1044,7 @@ describe('WebFetchTool', () => {
 
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { url: 'https://example.com/image.png' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
@@ -1062,7 +1067,7 @@ describe('WebFetchTool', () => {
 
       const tool = new WebFetchTool(mockConfig, bus);
       const params = { url: 'https://example.com/404' };
-      const invocation = tool.build(params);
+      const invocation = tool.build(params, mockConfig);
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
@@ -1120,7 +1125,7 @@ describe('WebFetchTool', () => {
     it('should return error if url is missing (experimental)', async () => {
       const tool = new WebFetchTool(mockConfig, bus);
       // Manually bypass build() validation to test executeExperimental safety check
-      const invocation = tool['createInvocation']({}, bus);
+      const invocation = tool['createInvocation']({}, bus, mockConfig);
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
@@ -1132,7 +1137,11 @@ describe('WebFetchTool', () => {
     it('should return error if url is invalid (experimental)', async () => {
       const tool = new WebFetchTool(mockConfig, bus);
       // Manually bypass build() validation to test executeExperimental safety check
-      const invocation = tool['createInvocation']({ url: 'not-a-url' }, bus);
+      const invocation = tool['createInvocation'](
+        { url: 'not-a-url' },
+        bus,
+        mockConfig,
+      );
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,
       });
@@ -1147,6 +1156,7 @@ describe('WebFetchTool', () => {
       const invocation = tool['createInvocation'](
         { url: 'http://localhost' },
         bus,
+        mockConfig,
       );
       const result = await invocation.execute({
         abortSignal: new AbortController().signal,

@@ -1,0 +1,151 @@
+/**
+ * @license
+ * Copyright 2026 Google LLC
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { loopCommand } from './loopCommand.js';
+import { CommandKind, type CommandContext } from './types.js';
+import * as core from '@google/gemini-cli-core';
+
+vi.mock('@google/gemini-cli-core', () => ({
+  parseLoopArgs: vi.fn(),
+  buildFixedPrompt: vi.fn(() => 'Mocked fixed prompt instructions'),
+  buildDynamicPrompt: vi.fn(() => 'Mocked dynamic prompt instructions'),
+  loadLoopState: vi.fn(),
+  startLoopDaemon: vi.fn(),
+  stopLoopDaemon: vi.fn(),
+  isLoopDaemonRunning: vi.fn(),
+}));
+
+describe('loopCommand', () => {
+  let mockContext: CommandContext;
+  const action = loopCommand.action;
+
+  if (!action) {
+    throw new Error('Loop command has no action');
+  }
+
+  beforeEach(() => {
+    mockContext = {
+      services: {
+        agentContext: {
+          config: {},
+        },
+      },
+    } as unknown as CommandContext;
+    vi.restoreAllMocks();
+  });
+
+  it('should have the correct command properties', () => {
+    expect(loopCommand.name).toBe('loop');
+    expect(loopCommand.kind).toBe(CommandKind.BUILT_IN);
+    expect(loopCommand.description).toContain(
+      'Run a prompt on a fixed interval',
+    );
+  });
+
+  it('should clear loop state on stop command', async () => {
+    const result = await action(mockContext, 'stop');
+
+    expect(core.stopLoopDaemon).toHaveBeenCalled();
+    expect(result).toEqual({
+      type: 'message',
+      messageType: 'info',
+      content: 'Background loop daemon stopped.',
+    });
+  });
+
+  it('should report no loop is scheduled on status when state is empty', async () => {
+    vi.mocked(core.loadLoopState).mockReturnValue(undefined);
+
+    const result = await action(mockContext, 'status');
+
+    expect(core.loadLoopState).toHaveBeenCalled();
+    expect(result).toEqual({
+      type: 'message',
+      messageType: 'info',
+      content: 'No loop is currently scheduled.',
+    });
+  });
+
+  it('should report next run on status when loop is active', async () => {
+    const nextRunTime = 1774900000000;
+    vi.mocked(core.loadLoopState).mockReturnValue({
+      nextRun: nextRunTime,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid: 1234,
+    });
+    vi.mocked(core.isLoopDaemonRunning).mockReturnValue(true);
+
+    const result = await action(mockContext, 'status');
+
+    expect(core.loadLoopState).toHaveBeenCalled();
+    expect(core.isLoopDaemonRunning).toHaveBeenCalled();
+    expect(result).toBeDefined();
+    if (result && 'type' in result) {
+      expect(result.type).toBe('message');
+      if (result.type === 'message') {
+        expect(result.messageType).toBe('info');
+        expect(result.content).toContain('Loop is scheduled to run next at');
+        expect(result.content).toContain('Running (PID: 1234)');
+      }
+    }
+  });
+
+  it('should schedule background loop when background flag is present', async () => {
+    vi.mocked(core.parseLoopArgs).mockReturnValue({
+      mode: 'fixed-prompt',
+      interval: '10s',
+      intervalMs: 10000,
+      prompt: 'Check server health',
+      background: true,
+    });
+
+    const result = await action(
+      mockContext,
+      '-i 10s --background Check server health',
+    );
+
+    expect(core.startLoopDaemon).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'fixed-prompt',
+        prompt: 'Check server health',
+        intervalMs: 10000,
+      }),
+      expect.any(Object),
+    );
+
+    expect(result).toBeDefined();
+    if (result && 'type' in result) {
+      expect(result.type).toBe('message');
+      if (result.type === 'message') {
+        expect(result.messageType).toBe('info');
+        expect(result.content).toContain(
+          'Background loop has been scheduled successfully as detached daemon.',
+        );
+      }
+    }
+  });
+
+  it('should return prompt submission for normal loop', async () => {
+    vi.mocked(core.parseLoopArgs).mockReturnValue({
+      mode: 'fixed-prompt',
+      interval: '5m',
+      intervalMs: 300000,
+      prompt: 'Analyze memory dump',
+      background: false,
+    });
+
+    const result = await action(mockContext, '-i 5m Analyze memory dump');
+
+    expect(core.buildFixedPrompt).toHaveBeenCalled();
+    expect(result).toEqual({
+      type: 'submit_prompt',
+      content: 'Mocked fixed prompt instructions',
+    });
+  });
+});

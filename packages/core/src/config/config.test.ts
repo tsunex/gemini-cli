@@ -4401,3 +4401,32 @@ describe('hasGemini35FlashGAAccess model setting', () => {
     expect(PREVIEW_GEMINI_FLASH_MODEL).toBe('gemini-3.5-flash');
   });
 });
+
+describe('Config fork', () => {
+  it('should synchronously copy parent storage initialization state to avoid "Storage must be initialized before use"', async () => {
+    const parentParams: ConfigParameters = {
+      sessionId: 'parent-session',
+      targetDir: '.',
+      debugMode: false,
+      model: 'test-model',
+      cwd: '.',
+    };
+
+    const parentConfig = new Config(parentParams);
+
+    // Explicitly initialize parent storage
+    await parentConfig.storage.initialize();
+    parentConfig['initialized'] = true;
+
+    // Fork the config
+    const childConfig = parentConfig.fork({
+      sessionId: 'child-session',
+    });
+
+    // Check that child config's storage is marked as initialized and isInitialized returns true
+    expect(childConfig.storage.isInitialized()).toBe(true);
+
+    // Ensure getProjectTempDir() on child storage does not throw
+    expect(() => childConfig.storage.getProjectTempDir()).not.toThrow();
+  });
+});

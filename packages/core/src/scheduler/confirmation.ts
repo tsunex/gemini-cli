@@ -233,11 +233,12 @@ async function handleExternalModification(
     state: SchedulerStateManager;
     modifier: ToolModificationHandler;
     getPreferredEditor: () => EditorType | undefined;
+    config: Config;
   },
   toolCall: ValidatingToolCall,
   signal: AbortSignal,
 ): Promise<ExternalModificationResult> {
-  const { state, modifier, getPreferredEditor } = deps;
+  const { state, modifier, getPreferredEditor, config } = deps;
 
   const preferredEditor = getPreferredEditor();
   const editor = await resolveEditorAsync(preferredEditor, signal);
@@ -254,7 +255,7 @@ async function handleExternalModification(
     signal,
   );
   if (result) {
-    const newInvocation = toolCall.tool.build(result.updatedParams);
+    const newInvocation = toolCall.tool.build(result.updatedParams, config);
     state.updateArgs(
       toolCall.request.callId,
       result.updatedParams,
@@ -268,12 +269,16 @@ async function handleExternalModification(
  * Handles modification via inline payload (e.g. from IDE or TUI).
  */
 async function handleInlineModification(
-  deps: { state: SchedulerStateManager; modifier: ToolModificationHandler },
+  deps: {
+    state: SchedulerStateManager;
+    modifier: ToolModificationHandler;
+    config: Config;
+  },
   toolCall: ValidatingToolCall,
   payload: ToolConfirmationPayload,
   signal: AbortSignal,
 ): Promise<void> {
-  const { state, modifier } = deps;
+  const { state, modifier, config } = deps;
   const result = await modifier.applyInlineModify(
     // eslint-disable-next-line @typescript-eslint/no-unsafe-type-assertion
     state.firstActiveCall as WaitingToolCall,
@@ -281,7 +286,7 @@ async function handleInlineModification(
     signal,
   );
   if (result) {
-    const newInvocation = toolCall.tool.build(result.updatedParams);
+    const newInvocation = toolCall.tool.build(result.updatedParams, config);
     state.updateArgs(
       toolCall.request.callId,
       result.updatedParams,

@@ -385,7 +385,7 @@ export class Scheduler {
       },
       () => {
         try {
-          const invocation = tool.build(request.args);
+          const invocation = tool.build(request.args, this.config);
           if (!request.display) {
             request.display = populateToolDisplay({
               name: tool.name,
@@ -867,7 +867,10 @@ export class Scheduler {
         // Mutate the active call so resolveConfirmation generates the correct Sandbox Expansion details
         activeCall.request.args['additional_permissions'] =
           parsedError.additionalPermissions;
-        activeCall.invocation = activeCall.tool.build(activeCall.request.args);
+        activeCall.invocation = activeCall.tool.build(
+          activeCall.request.args,
+          this.config,
+        );
 
         // CRITICAL: We must push the new args and invocation into the state manager
         // before calling resolveConfirmation, because resolveConfirmation fetches

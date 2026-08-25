@@ -135,7 +135,7 @@ export async function executeToolWithHooks(
         try {
           // We use the tool's build method to validate and create the invocation
           // This ensures consistent behavior with the initial creation
-          invocation = tool.build(invocation.params);
+          invocation = tool.build(invocation.params, config);
         } catch (error) {
           return {
             llmContent: `Tool parameter modification by hook failed validation: ${

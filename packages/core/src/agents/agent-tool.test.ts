@@ -5,7 +5,8 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { AgentTool } from './agent-tool.js';
+import { AgentTool, MAX_AGENT_DEPTH } from './agent-tool.js';
+import type { AgentLoopContext } from '../config/agent-loop-context.js';
 import { makeFakeConfig } from '../test-utils/config.js';
 import { createMockMessageBus } from '../test-utils/mock-message-bus.js';
 import type { Config } from '../config/config.js';
@@ -92,7 +93,11 @@ describe('AgentTool', () => {
 
   it('should map prompt to objective for local agent', async () => {
     const params = { agent_name: 'TestLocalAgent', prompt: 'Do something' };
-    const invocation = tool['createInvocation'](params, mockMessageBus);
+    const invocation = tool['createInvocation'](
+      params,
+      mockMessageBus,
+      mockConfig,
+    );
 
     // Trigger deferred instantiation
     await invocation.shouldConfirmExecute(new AbortController().signal);
@@ -110,7 +115,11 @@ describe('AgentTool', () => {
       agent_name: 'TestRemoteAgent',
       prompt: 'Search something',
     };
-    const invocation = tool['createInvocation'](params, mockMessageBus);
+    const invocation = tool['createInvocation'](
+      params,
+      mockMessageBus,
+      mockConfig,
+    );
 
     // Trigger deferred instantiation
     await invocation.shouldConfirmExecute(new AbortController().signal);
@@ -126,13 +135,17 @@ describe('AgentTool', () => {
   it('should throw error for unknown subagent', () => {
     const params = { agent_name: 'UnknownAgent', prompt: 'Hello' };
     expect(() => {
-      tool['createInvocation'](params, mockMessageBus);
+      tool['createInvocation'](params, mockMessageBus, mockConfig);
     }).toThrow("Subagent 'UnknownAgent' not found.");
   });
 
   it('should map prompt to task and use BrowserAgentInvocation for browser agent', async () => {
     const params = { agent_name: BROWSER_AGENT_NAME, prompt: 'Open page' };
-    const invocation = tool['createInvocation'](params, mockMessageBus);
+    const invocation = tool['createInvocation'](
+      params,
+      mockMessageBus,
+      mockConfig,
+    );
 
     // Trigger deferred instantiation
     await invocation.shouldConfirmExecute(new AbortController().signal);
@@ -146,6 +159,107 @@ describe('AgentTool', () => {
     );
   });
 
+  describe('allowedAgentNames', () => {
+    it('should advertise only the allowed agents in its schema', () => {
+      const scoped = new AgentTool(mockConfig, mockMessageBus, undefined, {
+        allowedAgentNames: ['TestLocalAgent'],
+      });
+
+      const schema = scoped.parameterSchema as {
+        properties: { agent_name: { enum?: string[]; description: string } };
+      };
+      expect(schema.properties.agent_name.enum).toEqual(['TestLocalAgent']);
+      expect(schema.properties.agent_name.description).toContain(
+        'TestLocalAgent',
+      );
+    });
+
+    it('should leave the schema unconstrained when unrestricted', () => {
+      const schema = tool.parameterSchema as {
+        properties: { agent_name: { enum?: string[] } };
+      };
+      expect(schema.properties.agent_name.enum).toBeUndefined();
+    });
+
+    it('should invoke an agent that is on the allowlist', async () => {
+      const scoped = new AgentTool(mockConfig, mockMessageBus, undefined, {
+        allowedAgentNames: ['TestLocalAgent'],
+      });
+
+      const invocation = scoped['createInvocation'](
+        { agent_name: 'TestLocalAgent', prompt: 'Do something' },
+        mockMessageBus,
+        mockConfig,
+      );
+      await invocation.shouldConfirmExecute(new AbortController().signal);
+
+      expect(LocalSubagentInvocation).toHaveBeenCalled();
+    });
+
+    it('should reject an agent that exists but is not on the allowlist', () => {
+      const scoped = new AgentTool(mockConfig, mockMessageBus, undefined, {
+        allowedAgentNames: ['TestLocalAgent'],
+      });
+
+      expect(() =>
+        scoped['createInvocation'](
+          { agent_name: 'TestRemoteAgent', prompt: 'Hello' },
+          mockMessageBus,
+          mockConfig,
+        ),
+      ).toThrow(
+        "Subagent 'TestRemoteAgent' is not available to this agent. Available subagents: TestLocalAgent.",
+      );
+    });
+  });
+
+  describe('recursion depth', () => {
+    const contextAtDepth = (agentDepth: number): AgentLoopContext =>
+      ({ config: mockConfig, agentDepth }) as unknown as AgentLoopContext;
+
+    it('should allow invocation below the maximum depth', async () => {
+      const nested = new AgentTool(
+        contextAtDepth(MAX_AGENT_DEPTH - 1),
+        mockMessageBus,
+      );
+
+      const invocation = nested['createInvocation'](
+        { agent_name: 'TestLocalAgent', prompt: 'Do something' },
+        mockMessageBus,
+        mockConfig,
+      );
+      await invocation.shouldConfirmExecute(new AbortController().signal);
+
+      expect(LocalSubagentInvocation).toHaveBeenCalled();
+    });
+
+    it('should refuse to nest past the maximum depth', () => {
+      const nested = new AgentTool(
+        contextAtDepth(MAX_AGENT_DEPTH),
+        mockMessageBus,
+      );
+
+      expect(() =>
+        nested['createInvocation'](
+          { agent_name: 'TestLocalAgent', prompt: 'Do something' },
+          mockMessageBus,
+          mockConfig,
+        ),
+      ).toThrow(`Maximum agent nesting depth (${MAX_AGENT_DEPTH}) reached`);
+    });
+
+    it('should treat a missing depth as the top level', async () => {
+      const invocation = tool['createInvocation'](
+        { agent_name: 'TestLocalAgent', prompt: 'Do something' },
+        mockMessageBus,
+        mockConfig,
+      );
+      await invocation.shouldConfirmExecute(new AbortController().signal);
+
+      expect(LocalSubagentInvocation).toHaveBeenCalled();
+    });
+  });
+
   describe('agentSessionSubagentEnabled feature flag', () => {
     it('should use LocalSessionInvocation when flag is enabled for local agent', async () => {
       vi.spyOn(mockConfig, 'isAgentSessionSubagentEnabled').mockReturnValue(
@@ -157,7 +271,11 @@ describe('AgentTool', () => {
         agent_name: 'TestLocalAgent',
         prompt: 'Do something',
       };
-      const invocation = tool['createInvocation'](params, mockMessageBus);
+      const invocation = tool['createInvocation'](
+        params,
+        mockMessageBus,
+        mockConfig,
+      );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
       expect(LocalSessionInvocation).toHaveBeenCalledWith(
@@ -180,7 +298,11 @@ describe('AgentTool', () => {
         agent_name: 'TestRemoteAgent',
         prompt: 'Search something',
       };
-      const invocation = tool['createInvocation'](params, mockMessageBus);
+      const invocation = tool['createInvocation'](
+        params,
+        mockMessageBus,
+        mockConfig,
+      );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
       expect(RemoteSessionInvocation).toHaveBeenCalledWith(
@@ -203,7 +325,11 @@ describe('AgentTool', () => {
         agent_name: 'TestLocalAgent',
         prompt: 'Do something',
       };
-      const localInv = tool['createInvocation'](localParams, mockMessageBus);
+      const localInv = tool['createInvocation'](
+        localParams,
+        mockMessageBus,
+        mockConfig,
+      );
       await localInv.shouldConfirmExecute(new AbortController().signal);
 
       expect(LocalSubagentInvocation).toHaveBeenCalled();
@@ -215,7 +341,11 @@ describe('AgentTool', () => {
         agent_name: 'TestRemoteAgent',
         prompt: 'Search',
       };
-      const remoteInv = tool['createInvocation'](remoteParams, mockMessageBus);
+      const remoteInv = tool['createInvocation'](
+        remoteParams,
+        mockMessageBus,
+        mockConfig,
+      );
       await remoteInv.shouldConfirmExecute(new AbortController().signal);
 
       expect(RemoteAgentInvocation).toHaveBeenCalled();
@@ -233,7 +363,11 @@ describe('AgentTool', () => {
         agent_name: 'TestLocalAgent',
         prompt: 'Do something',
       };
-      const invocation = tool['createInvocation'](params, mockMessageBus);
+      const invocation = tool['createInvocation'](
+        params,
+        mockMessageBus,
+        mockConfig,
+      );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
       expect(LocalSessionInvocation).toHaveBeenCalledWith(
@@ -255,7 +389,11 @@ describe('AgentTool', () => {
         agent_name: BROWSER_AGENT_NAME,
         prompt: 'Open page',
       };
-      const invocation = tool['createInvocation'](params, mockMessageBus);
+      const invocation = tool['createInvocation'](
+        params,
+        mockMessageBus,
+        mockConfig,
+      );
       await invocation.shouldConfirmExecute(new AbortController().signal);
 
       expect(BrowserAgentInvocation).toHaveBeenCalled();

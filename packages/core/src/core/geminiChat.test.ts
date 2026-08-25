@@ -4256,7 +4256,10 @@ describe('GeminiChat', () => {
           errorType: undefined,
         },
         tool: new MockTool({ name: 'mock-tool' }),
-        invocation: new MockTool({ name: 'mock-tool' }).build({ key: 'value' }),
+        invocation: new MockTool({ name: 'mock-tool' }).build(
+          { key: 'value' },
+          mockConfig,
+        ),
       };
 
       const spy = vi.spyOn(chat.getChatRecordingService(), 'recordToolCalls');
@@ -4291,7 +4294,10 @@ describe('GeminiChat', () => {
           errorType: undefined,
         },
         tool: new MockTool({ name: 'mock-tool' }),
-        invocation: new MockTool({ name: 'mock-tool' }).build({ key: 'value' }),
+        invocation: new MockTool({ name: 'mock-tool' }).build(
+          { key: 'value' },
+          mockConfig,
+        ),
       };
 
       const spy = vi.spyOn(chat.getChatRecordingService(), 'recordToolCalls');

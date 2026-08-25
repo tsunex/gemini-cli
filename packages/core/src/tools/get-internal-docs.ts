@@ -15,6 +15,7 @@ import {
 } from './tools.js';
 import { GET_INTERNAL_DOCS_TOOL_NAME } from './tool-names.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
+import type { Config } from '../config/config.js';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -176,6 +177,7 @@ export class GetInternalDocsTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: GetInternalDocsParams,
     messageBus: MessageBus,
+    _config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<GetInternalDocsParams, ToolResult> {

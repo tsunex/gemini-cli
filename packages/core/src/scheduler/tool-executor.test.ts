@@ -91,7 +91,7 @@ describe('ToolExecutor', () => {
         returnDisplay: 'Tool output',
       }),
     });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
 
     // Mock executeToolWithHooks to return success
     vi.mocked(coreToolHookTriggers.executeToolWithHooks).mockResolvedValue({
@@ -158,7 +158,7 @@ describe('ToolExecutor', () => {
       name: 'failTool',
       description: 'Mock description',
     });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
 
     // Mock executeToolWithHooks to throw
     vi.mocked(coreToolHookTriggers.executeToolWithHooks).mockRejectedValue(
@@ -216,7 +216,7 @@ describe('ToolExecutor', () => {
       name: 'webSearchTool',
       description: 'Mock web search',
     });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
 
     const abortErr = new Error('The user aborted a request.');
     abortErr.name = 'AbortError';
@@ -257,7 +257,7 @@ describe('ToolExecutor', () => {
       name: 'someTool',
       description: 'Mock',
     });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
 
     const cancelErr = new Error('Operation cancelled by user');
     vi.mocked(coreToolHookTriggers.executeToolWithHooks).mockRejectedValue(
@@ -296,7 +296,7 @@ describe('ToolExecutor', () => {
     const mockTool = new MockTool({
       name: 'slowTool',
     });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
 
     // Mock executeToolWithHooks to simulate slow execution or cancellation check
     vi.mocked(coreToolHookTriggers.executeToolWithHooks).mockImplementation(
@@ -337,7 +337,7 @@ describe('ToolExecutor', () => {
     const mockTool = new MockTool({
       name: 'slowTool',
     });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
 
     // Mock executeToolWithHooks to simulate slow execution
     vi.mocked(coreToolHookTriggers.executeToolWithHooks).mockImplementation(
@@ -386,7 +386,7 @@ describe('ToolExecutor', () => {
     vi.spyOn(config.storage, 'getProjectTempDir').mockReturnValue('/tmp');
 
     const mockTool = new MockTool({ name: SHELL_TOOL_NAME });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
     const longOutput = 'This is a very long output that should be truncated.';
 
     // 2. Mock execution returning long content
@@ -456,7 +456,7 @@ describe('ToolExecutor', () => {
       {},
       messageBus,
     );
-    const invocation = mcpTool.build({});
+    const invocation = mcpTool.build({}, config);
     const longText = 'This is a very long MCP output that should be truncated.';
 
     // 2. Mock execution returning Part[] with single text Part
@@ -519,7 +519,7 @@ describe('ToolExecutor', () => {
       {},
       messageBus,
     );
-    const invocation = mcpTool.build({});
+    const invocation = mcpTool.build({}, config);
     const longText = 'This is long text that exceeds the threshold.';
 
     // Part[] with multiple parts — should NOT be truncated
@@ -566,7 +566,7 @@ describe('ToolExecutor', () => {
       {},
       messageBus,
     );
-    const invocation = mcpTool.build({});
+    const invocation = mcpTool.build({}, config);
 
     vi.mocked(coreToolHookTriggers.executeToolWithHooks).mockResolvedValue({
       llmContent: [{ text: 'short' }],
@@ -666,7 +666,7 @@ describe('ToolExecutor', () => {
       name: 'remote_agent_call',
       description: 'Remote agent call',
     });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
 
     const testExecutionId = 67890;
     vi.mocked(coreToolHookTriggers.executeToolWithHooks).mockImplementation(
@@ -710,7 +710,7 @@ describe('ToolExecutor', () => {
     const mockTool = new MockTool({
       name: 'slowTool',
     });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
 
     const partialOutput = 'Some partial output before cancellation';
     vi.mocked(coreToolHookTriggers.executeToolWithHooks).mockImplementation(
@@ -763,7 +763,7 @@ describe('ToolExecutor', () => {
     vi.spyOn(config.storage, 'getProjectTempDir').mockReturnValue('/tmp');
 
     const mockTool = new MockTool({ name: SHELL_TOOL_NAME });
-    const invocation = mockTool.build({});
+    const invocation = mockTool.build({}, config);
     const longOutput = 'This is a very long output that should be truncated.';
 
     // 2. Mock execution returning long content

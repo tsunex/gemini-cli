@@ -670,13 +670,16 @@ export class WriteFileTool
   protected createInvocation(
     params: WriteFileToolParams,
     messageBus: MessageBus,
+    config?: Config,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ): ToolInvocation<WriteFileToolParams, ToolResult> {
     return new WriteFileToolInvocation(
-      this.config,
+      config ?? this.config,
       params,
-      messageBus ?? this.messageBus,
-      this.name,
-      this.displayName,
+      messageBus,
+      _toolName,
+      _toolDisplayName,
     );
   }
 

@@ -20,6 +20,7 @@ import {
   type ToolResult,
 } from './tools.js';
 import { MessageBus } from '../confirmation-bus/message-bus.js';
+import type { Config } from '../config/config.js';
 import { PolicyEngine } from '../policy/policy-engine.js';
 import {
   MessageBusType,
@@ -90,6 +91,7 @@ class TestTool extends BaseDeclarativeTool<TestParams, TestResult> {
   protected createInvocation(
     params: TestParams,
     messageBus: MessageBus,
+    _config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ) {

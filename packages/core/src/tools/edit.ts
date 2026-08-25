@@ -1183,13 +1183,16 @@ export class EditTool
   protected createInvocation(
     params: EditToolParams,
     messageBus: MessageBus,
+    config?: Config,
+    _toolName?: string,
+    _toolDisplayName?: string,
   ): ToolInvocation<EditToolParams, ToolResult> {
     return new EditToolInvocation(
-      this.config,
+      config ?? this.config,
       params,
       messageBus,
-      this.name,
-      this.displayName,
+      _toolName ?? this.name,
+      _toolDisplayName ?? this.displayName,
     );
   }
 

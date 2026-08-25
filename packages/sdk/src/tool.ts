@@ -186,7 +186,9 @@ export class SdkTool<T extends z.ZodTypeAny> extends BaseDeclarativeTool<
   protected createInvocation(
     params: z.infer<T>,
     messageBus: MessageBus,
+    config?: unknown,
     toolName?: string,
+    _toolDisplayName?: string,
   ): ToolInvocation<z.infer<T>, ToolResult> {
     return new SdkToolInvocation(
       params,

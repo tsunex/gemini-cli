@@ -347,13 +347,14 @@ export class LSTool extends BaseDeclarativeTool<LSToolParams, ToolResult> {
   protected createInvocation(
     params: LSToolParams,
     messageBus: MessageBus,
+    config?: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<LSToolParams, ToolResult> {
     return new LSToolInvocation(
-      this.config,
+      config ?? this.config,
       params,
-      messageBus ?? this.messageBus,
+      messageBus,
       _toolName,
       _toolDisplayName,
     );

@@ -29,6 +29,8 @@ import {
   writeToStdout,
   getVersion,
   debugLogger,
+  startWatchingLoopNotifications,
+  stopWatchingLoopNotifications,
 } from '@google/gemini-cli-core';
 import type { InitializationResult } from './core/initializer.js';
 import type { LoadedSettings } from './config/settings.js';
@@ -62,6 +64,8 @@ export async function startInteractiveUI(
   initializationResult: InitializationResult,
 ) {
   initializeConsoleStore();
+  startWatchingLoopNotifications();
+  registerCleanup(stopWatchingLoopNotifications);
   // Never enter Ink alternate buffer mode when screen reader mode is enabled
   // as there is no benefit of alternate buffer mode when using a screen reader
   // and the Ink alternate buffer mode requires line wrapping harmful to

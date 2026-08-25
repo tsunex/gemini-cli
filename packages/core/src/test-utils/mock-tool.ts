@@ -19,6 +19,7 @@ import {
 } from '../tools/tools.js';
 import { createMockMessageBus } from './mock-message-bus.js';
 import type { MessageBus } from '../confirmation-bus/message-bus.js';
+import type { Config } from '../config/config.js';
 
 interface MockToolOptions {
   name: string;
@@ -125,6 +126,7 @@ export class MockTool extends BaseDeclarativeTool<
   protected createInvocation(
     params: { [key: string]: unknown },
     messageBus: MessageBus,
+    _config: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<{ [key: string]: unknown }, ToolResult> {
@@ -237,6 +239,7 @@ export class MockModifiableTool
   protected createInvocation(
     params: Record<string, unknown>,
     messageBus: MessageBus,
+    _config: Config,
     _toolName?: string,
     _toolDisplayName?: string,
   ): ToolInvocation<Record<string, unknown>, ToolResult> {
