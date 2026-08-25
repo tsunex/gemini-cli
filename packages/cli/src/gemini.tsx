@@ -637,6 +637,39 @@ export async function main() {
     // access to the project identifier.
     await config.storage.initialize();
 
+    // 1. デーモン実行の割り込み (このプロセス自身がデーモンとして起動された場合)
+    if (process.argv.includes('loop') && process.argv.includes('daemon')) {
+      const { loadLoopState, scheduleLoop } = await import(
+        '@google/gemini-cli-core'
+      );
+      const state = loadLoopState();
+      if (state) {
+        state.pid = process.pid;
+        scheduleLoop(state, config);
+        const logPath = path.join(Storage.getProjectLoopStateDir(), 'loop.log');
+        const fs = await import('node:fs');
+        fs.appendFileSync(
+          logPath,
+          `[${Date.now()}] Daemon loop active with PID: ${process.pid}\n`,
+        );
+      } else {
+        process.exit(ExitCodes.FATAL_INPUT_ERROR);
+      }
+      return;
+    }
+
+    // 2. オートスタートの処理 (デーモンが死んでいるがスケジュールが残っている場合、新デーモンを起動)
+    const { loadLoopState, isLoopDaemonRunning, startLoopDaemon } =
+      await import('@google/gemini-cli-core');
+    const loopState = loadLoopState();
+    if (loopState && !isLoopDaemonRunning()) {
+      try {
+        startLoopDaemon(loopState, config);
+      } catch (e) {
+        debugLogger.error('Failed to auto-start loop daemon:', e);
+      }
+    }
+
     adminControlsListner.setConfig(config);
 
     if (config.isInteractive() && settings.merged.general.devtools) {

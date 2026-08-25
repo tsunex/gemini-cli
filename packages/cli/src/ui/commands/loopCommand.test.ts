@@ -13,9 +13,10 @@ vi.mock('@google/gemini-cli-core', () => ({
   parseLoopArgs: vi.fn(),
   buildFixedPrompt: vi.fn(() => 'Mocked fixed prompt instructions'),
   buildDynamicPrompt: vi.fn(() => 'Mocked dynamic prompt instructions'),
-  clearLoopState: vi.fn(),
   loadLoopState: vi.fn(),
-  scheduleLoop: vi.fn(),
+  startLoopDaemon: vi.fn(),
+  stopLoopDaemon: vi.fn(),
+  isLoopDaemonRunning: vi.fn(),
 }));
 
 describe('loopCommand', () => {
@@ -48,11 +49,11 @@ describe('loopCommand', () => {
   it('should clear loop state on stop command', async () => {
     const result = await action(mockContext, 'stop');
 
-    expect(core.clearLoopState).toHaveBeenCalled();
+    expect(core.stopLoopDaemon).toHaveBeenCalled();
     expect(result).toEqual({
       type: 'message',
       messageType: 'info',
-      content: 'Background loop stopped.',
+      content: 'Background loop daemon stopped.',
     });
   });
 
@@ -76,17 +77,21 @@ describe('loopCommand', () => {
       mode: 'fixed-prompt',
       prompt: 'Check logs',
       intervalMs: 5000,
+      pid: 1234,
     });
+    vi.mocked(core.isLoopDaemonRunning).mockReturnValue(true);
 
     const result = await action(mockContext, 'status');
 
     expect(core.loadLoopState).toHaveBeenCalled();
+    expect(core.isLoopDaemonRunning).toHaveBeenCalled();
     expect(result).toBeDefined();
     if (result && 'type' in result) {
       expect(result.type).toBe('message');
       if (result.type === 'message') {
         expect(result.messageType).toBe('info');
         expect(result.content).toContain('Loop is scheduled to run next at');
+        expect(result.content).toContain('Running (PID: 1234)');
       }
     }
   });
@@ -105,7 +110,7 @@ describe('loopCommand', () => {
       '-i 10s --background Check server health',
     );
 
-    expect(core.scheduleLoop).toHaveBeenCalledWith(
+    expect(core.startLoopDaemon).toHaveBeenCalledWith(
       expect.objectContaining({
         mode: 'fixed-prompt',
         prompt: 'Check server health',
@@ -120,7 +125,7 @@ describe('loopCommand', () => {
       if (result.type === 'message') {
         expect(result.messageType).toBe('info');
         expect(result.content).toContain(
-          'Background loop has been scheduled successfully.',
+          'Background loop has been scheduled successfully as detached daemon.',
         );
       }
     }

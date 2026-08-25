@@ -9,6 +9,7 @@
 import { Storage } from '../config/storage.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { spawn } from 'node:child_process';
 import { ApprovalMode } from '../policy/types.js';
 
 export interface LoopState {
@@ -16,12 +17,17 @@ export interface LoopState {
   mode: string;
   prompt: string;
   intervalMs?: number;
+  pid?: number;
 }
 
 const STATE_FILE = 'state.json';
 
 function getStatePath(): string {
   return path.join(Storage.getProjectLoopStateDir(), STATE_FILE);
+}
+
+function getLogPath(): string {
+  return path.join(Storage.getProjectLoopStateDir(), 'loop.log');
 }
 
 import { LegacyAgentSession } from '../agent/legacy-agent-session.js';
@@ -52,7 +58,7 @@ export function schedule(state: LoopState, config: Config): void {
 
     let accumulatedText = '';
     try {
-      fs.appendFileSync('trace.log', `[${Date.now()}] BG Loop: Start\n`);
+      fs.appendFileSync(getLogPath(), `[${Date.now()}] BG Loop: Start\n`);
 
       // Proactively initialize the client to prevent "Chat not initialized" errors in background loops
       const client = backgroundConfig.getGeminiClient();
@@ -70,12 +76,12 @@ export function schedule(state: LoopState, config: Config): void {
 
       for await (const event of stream) {
         fs.appendFileSync(
-          'trace.log',
+          getLogPath(),
           `[${Date.now()}] BG Loop: Event received: ${JSON.stringify(event)}\n`,
         );
         if (event.type === 'message' && event.role === 'agent') {
           fs.appendFileSync(
-            'trace.log',
+            getLogPath(),
             `[${Date.now()}] BG Loop: Agent turn: ${JSON.stringify(event.content)}\n`,
           );
           for (const part of event.content) {
@@ -87,11 +93,42 @@ export function schedule(state: LoopState, config: Config): void {
       }
 
       fs.appendFileSync(
-        'trace.log',
+        getLogPath(),
         `[${Date.now()}] BG Loop: Stream finished. Result: ${accumulatedText}\n`,
       );
 
       if (accumulatedText.trim()) {
+        try {
+          const notificationDir = path.join(
+            Storage.getProjectLoopStateDir(),
+            'notifications',
+          );
+          fs.mkdirSync(notificationDir, { recursive: true });
+          const notificationFile = path.join(
+            notificationDir,
+            `notify-${Date.now()}-${Math.random().toString(36).substring(2, 9)}.json`,
+          );
+          fs.writeFileSync(
+            notificationFile,
+            JSON.stringify(
+              {
+                timestamp: Date.now(),
+                prompt: state.prompt,
+                message: accumulatedText.trim(),
+              },
+              null,
+              2,
+            ),
+          );
+        } catch (err) {
+          fs.appendFileSync(
+            getLogPath(),
+            `[${Date.now()}] BG Loop: Failed to write notification file: ${
+              err instanceof Error ? err.message : String(err)
+            }\n`,
+          );
+        }
+
         coreEvents.emit(CoreEvent.UserFeedback, {
           severity: 'info',
           message: `[Loop Background Response]\n${accumulatedText.trim()}`,
@@ -105,7 +142,7 @@ export function schedule(state: LoopState, config: Config): void {
           nextRun: Date.now() + (state.intervalMs ?? 0),
         };
         fs.appendFileSync(
-          'trace.log',
+          getLogPath(),
           `[${Date.now()}] BG Loop: Rescheduling next run.\n`,
         );
         schedule(newState, config);
@@ -113,7 +150,7 @@ export function schedule(state: LoopState, config: Config): void {
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       fs.appendFileSync(
-        'trace.log',
+        getLogPath(),
         `[${Date.now()}] BG Loop: CATCH BLOCK ERROR: ${errorMessage}\n`,
       );
       coreEvents.emit(CoreEvent.UserFeedback, {
@@ -145,6 +182,14 @@ function isLoopState(obj: unknown): obj is LoopState {
     'intervalMs' in obj &&
     typeof obj.intervalMs !== 'number' &&
     typeof obj.intervalMs !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'pid' in obj &&
+    typeof obj.pid !== 'number' &&
+    typeof obj.pid !== 'undefined'
   ) {
     return false;
   }
@@ -192,10 +237,79 @@ export function clearState(): void {
   }
 }
 
-// Ensure state is cleared on process termination
-process.on('SIGINT', () => {
+export function clearTimer(): void {
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    timeoutId = undefined;
+  }
+}
+
+export function startDaemon(state: LoopState, _config: Config): void {
+  stopDaemon();
+
+  const statePath = getStatePath();
+  fs.mkdirSync(path.dirname(statePath), { recursive: true });
+  saveState(state);
+
+  const nodeBin = process.argv[0];
+  const scriptPath = process.argv[1];
+
+  const child = spawn(nodeBin, [scriptPath, 'loop', 'daemon'], {
+    detached: true,
+    stdio: 'ignore',
+    env: {
+      ...process.env,
+    },
+  });
+
+  child.unref();
+
+  if (child.pid) {
+    const newState = { ...state, pid: child.pid };
+    saveState(newState);
+    fs.appendFileSync(
+      getLogPath(),
+      `[${Date.now()}] Daemon spawned with PID: ${child.pid}\n`,
+    );
+  } else {
+    throw new Error('Failed to retrieve process ID of the spawned daemon.');
+  }
+}
+
+export function stopDaemon(): void {
+  const state = loadState();
+  if (state && state.pid) {
+    try {
+      process.kill(state.pid, 0);
+      process.kill(state.pid, 'SIGTERM');
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] Sent SIGTERM to daemon PID: ${state.pid}\n`,
+      );
+    } catch {
+      // Ignore if process is already dead or permission denied
+    }
+  }
   clearState();
+}
+
+export function isDaemonRunning(): boolean {
+  const state = loadState();
+  if (!state || !state.pid) {
+    return false;
+  }
+  try {
+    process.kill(state.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// Ensure active timers (not disk state) are cleared on process termination
+process.on('SIGINT', () => {
+  clearTimer();
 });
 process.on('SIGTERM', () => {
-  clearState();
+  clearTimer();
 });

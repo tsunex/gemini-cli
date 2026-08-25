@@ -328,5 +328,9 @@ export {
   loadState as loadLoopState,
   saveState as saveLoopState,
   clearState as clearLoopState,
+  startDaemon as startLoopDaemon,
+  stopDaemon as stopLoopDaemon,
+  isDaemonRunning as isLoopDaemonRunning,
+  clearTimer as clearLoopTimer,
   type LoopState,
 } from './services/loopScheduler.js';

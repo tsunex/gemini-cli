@@ -83,14 +83,25 @@ describe('loopScheduler', () => {
   });
 
   it('should schedule loop and run session', async () => {
-    const mockConfig = {
+    const rawMockConfig = {
       _params: {
         targetDir: tempDir,
         sessionId: 'test-session',
       },
       initialize: vi.fn().mockResolvedValue(undefined),
       getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
-    } as unknown as Config;
+      fork: vi.fn().mockImplementation((params) => ({
+        ...rawMockConfig,
+        _params: {
+          ...rawMockConfig._params,
+          ...params,
+        },
+      })),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    const mockConfig = rawMockConfig as unknown as Config;
 
     const events = [
       {
@@ -171,7 +182,7 @@ describe('loopScheduler', () => {
     expect(loaded).toBeUndefined();
   });
 
-  it('should clear state on process exit signals', () => {
+  it('should clear timer on process exit signals but preserve state.json', () => {
     const state: LoopState = {
       nextRun: Date.now() + 5000,
       mode: 'fixed-prompt',
@@ -182,9 +193,9 @@ describe('loopScheduler', () => {
     saveState(state);
     expect(loadState()).toEqual(state);
 
-    // Trigger SIGINT event on process
     process.emit('SIGINT');
 
-    expect(loadState()).toBeUndefined();
+    // State file is preserved for auto-restart
+    expect(loadState()).toEqual(state);
   });
 });

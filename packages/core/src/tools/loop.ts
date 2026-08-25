@@ -13,7 +13,7 @@ import {
 } from './tools.js';
 import { parseLoopArgs, type ParsedLoopArgs } from './loop-parser.js';
 import { type MessageBus } from '../confirmation-bus/message-bus.js';
-import { schedule, type LoopState } from '../services/loopScheduler.js';
+import { startDaemon, type LoopState } from '../services/loopScheduler.js';
 import { type Config } from '../config/config.js';
 
 const MAINTENANCE_PROMPT = 'This is a maintenance prompt.';
@@ -67,7 +67,7 @@ export class LoopTool extends BaseDeclarativeTool<
         intervalMs: parsed.intervalMs,
       };
 
-      schedule(loopState, config);
+      startDaemon(loopState, config);
 
       const result: ToolResult = {
         llmContent: `Background loop for "${commandToRun}" started. It will run every ${parsed.interval}.`,

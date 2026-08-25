@@ -104,6 +104,7 @@ import {
   type TrackedWaitingToolCall,
   type TrackedExecutingToolCall,
 } from './useToolScheduler.js';
+import { useLoopNotificationListener } from './useLoopNotificationListener.js';
 import { theme } from '../semantic-colors.js';
 import { getToolGroupBorderAppearance } from '../utils/borderStyles.js';
 import { promises as fs } from 'node:fs';
@@ -417,6 +418,19 @@ export const useGeminiStream = (
     terminalWidth,
     terminalHeight,
     activeBackgroundExecutionId,
+  );
+
+  // Poll for background loop notifications and dynamically insert into active chat UI
+  useLoopNotificationListener(
+    useCallback(
+      (notification) => {
+        addItem({
+          type: MessageType.INFO,
+          text: `🔔 **[Loop Background Response]** (${notification.prompt})\n\n${notification.message}`,
+        });
+      },
+      [addItem],
+    ),
   );
 
   const streamingState = useMemo(

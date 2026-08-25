@@ -14,9 +14,10 @@ import {
   parseLoopArgs,
   buildFixedPrompt,
   buildDynamicPrompt,
-  clearLoopState,
   loadLoopState,
-  scheduleLoop,
+  startLoopDaemon,
+  stopLoopDaemon,
+  isLoopDaemonRunning,
   type LoopState,
 } from '@google/gemini-cli-core';
 
@@ -38,11 +39,11 @@ export const loopCommand: SlashCommand = {
 
     // Check for control commands
     if (lowerArgs === 'stop') {
-      clearLoopState();
+      stopLoopDaemon();
       return {
         type: 'message',
         messageType: 'info',
-        content: 'Background loop stopped.',
+        content: 'Background loop daemon stopped.',
       };
     }
 
@@ -50,9 +51,10 @@ export const loopCommand: SlashCommand = {
       const state = loadLoopState();
       let status: string;
       if (state) {
+        const isRunning = isLoopDaemonRunning();
         status = `Loop is scheduled to run next at ${new Date(
           state.nextRun,
-        ).toLocaleString()}.`;
+        ).toLocaleString()}.\n  - Daemon Status: ${isRunning ? `Running (PID: ${state.pid})` : 'Stopped/Dead'}`;
       } else {
         status = 'No loop is currently scheduled.';
       }
@@ -85,13 +87,13 @@ export const loopCommand: SlashCommand = {
         intervalMs,
       };
 
-      scheduleLoop(state, config);
+      startLoopDaemon(state, config);
 
       const nextRunDate = new Date(state.nextRun);
       return {
         type: 'message',
         messageType: 'info',
-        content: `Background loop has been scheduled successfully.\n  - Mode: ${state.mode}\n  - Interval: ${intervalMs}ms (${intervalMs / 1000} seconds)\n  - Next run: ${nextRunDate.toLocaleString()}\n  - Prompt: "${effectivePrompt}"`,
+        content: `Background loop has been scheduled successfully as detached daemon.\n  - Mode: ${state.mode}\n  - Interval: ${intervalMs}ms (${intervalMs / 1000} seconds)\n  - Next run: ${nextRunDate.toLocaleString()}\n  - Prompt: "${effectivePrompt}"`,
       };
     }
 
