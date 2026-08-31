@@ -20,6 +20,7 @@ import {
   isDaemonRunning,
   normalizeStaleState,
   TERMINATION_GRACE_MS,
+  BACKGROUND_RUN_TIMEOUT_MS,
   LoopAlreadyRunningError,
   type LoopState,
 } from './loopScheduler.js';
@@ -371,6 +372,94 @@ describe('loopScheduler', () => {
     expect(loaded).toBeDefined();
     expect(loaded!.retryCount).toBe(1);
     expect(loaded!.lastError).toContain('completion signal');
+    expect(loaded!.nextRun).toBeGreaterThan(Date.now() + interval);
+  });
+
+  it('should abort a hung run via the watchdog if no stream event arrives within BACKGROUND_RUN_TIMEOUT_MS, then treat it as incomplete', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir, sessionId: 'test-session' },
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
+      fork: vi.fn().mockImplementation((params) => ({
+        ...rawMockConfig,
+        _params: { ...rawMockConfig._params, ...params },
+      })),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    const mockConfig = rawMockConfig as unknown as Config;
+
+    // Simulates a run that yields one event and then goes completely
+    // silent forever - e.g. a deadlocked invoke_agent subagent delegation
+    // (see task_15.md). The generator only resumes once `abortMock` below
+    // is invoked, mirroring how a real AgentSession.abort() call causes an
+    // in-flight stream to wind down.
+    let releaseStream: () => void = () => {};
+    const blocker = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    async function* mockSendStream() {
+      yield {
+        type: 'message',
+        streamId: 'mock-stream',
+        timestamp: new Date().toISOString(),
+        role: 'agent',
+        content: [{ type: 'text', text: 'Delegating to subagent...' }],
+      };
+      await blocker;
+    }
+
+    const abortMock = vi.fn().mockImplementation(() => {
+      releaseStream();
+      return Promise.resolve();
+    });
+    const sendStreamMock = vi.fn().mockReturnValue(mockSendStream());
+    vi.mocked(LegacyAgentSession).mockImplementation(
+      () =>
+        ({
+          sendStream: sendStreamMock,
+          abort: abortMock,
+        }) as unknown as LegacyAgentSession,
+    );
+
+    const { sendNotification } = await import('../utils/notificationClient.js');
+    const sendNotificationMock = vi.mocked(sendNotification);
+
+    const interval = 5000;
+    const state: LoopState = {
+      nextRun: Date.now() + interval,
+      mode: 'fixed-prompt',
+      prompt: 'Check for text.txt',
+      intervalMs: interval,
+    };
+
+    schedule(state, mockConfig);
+    vi.advanceTimersByTime(interval);
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+
+    // The run is now blocked on `blocker` - the watchdog has not fired yet.
+    expect(abortMock).not.toHaveBeenCalled();
+
+    // Advance past BACKGROUND_RUN_TIMEOUT_MS - the watchdog should abort
+    // the hung session, which releases the blocked stream.
+    vi.advanceTimersByTime(BACKGROUND_RUN_TIMEOUT_MS);
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+
+    expect(abortMock).toHaveBeenCalled();
+    // No completion marker was ever produced, so nothing is surfaced to the user.
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+
+    const loaded = loadState();
+    expect(loaded).toBeDefined();
+    expect(loaded!.retryCount).toBe(1);
+    expect(loaded!.lastError).toContain('aborted');
     expect(loaded!.nextRun).toBeGreaterThan(Date.now() + interval);
   });
 

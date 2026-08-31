@@ -58,6 +58,19 @@ const MAX_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
 // only the number of turns a single background run may take is bounded.
 const BACKGROUND_MAX_SESSION_TURNS = 8;
 
+// A background run can hang indefinitely with no further stream events at
+// all - e.g. a subagent delegation (invoke_agent) that itself never
+// responds/deadlocks, or a stuck network call. Unlike
+// BACKGROUND_MAX_SESSION_TURNS (which only bounds the *number* of turns),
+// nothing previously bounded *wall-clock time*, so a single hung run could
+// freeze the loop forever: currentPhase stays 'running', lastHeartbeatAt
+// stops advancing, and nextRun is never rescheduled - observable only as a
+// live daemon PID that has gone completely silent. A watchdog timer aborts
+// the in-flight AgentSession if no stream event arrives within this window,
+// letting the existing "no completion signal" setback/backoff path recover
+// the loop instead of it staying stuck until the process is killed by hand.
+export const BACKGROUND_RUN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
 // A background run is only "done" if the agent explicitly confirms it
 // actually completed the requested check - not merely because it stopped
 // talking (e.g. it hit BACKGROUND_MAX_SESSION_TURNS mid-tangent, or gave up
@@ -212,28 +225,60 @@ export function schedule(state: LoopState, config: Config): void {
         },
       });
 
-      for await (const event of stream) {
-        // Update the on-disk heartbeat on every event so a monitoring user
-        // (via `/loop status`) can distinguish "actively working" from
-        // "hung/stuck" during a long-running background turn, instead of
-        // only seeing a stale nextRun with no further signal (see
-        // report_11.md §6/§9-3).
-        recordHeartbeat('running');
-        fs.appendFileSync(
-          getLogPath(),
-          `[${Date.now()}] BG Loop: Event received: ${JSON.stringify(event)}\n`,
-        );
-        if (event.type === 'message' && event.role === 'agent') {
+      // Watchdog: abort the run if no stream event arrives within
+      // BACKGROUND_RUN_TIMEOUT_MS. Reset on every event so a normally slow
+      // (but still progressing) run is never killed - only a run that goes
+      // fully silent (e.g. a deadlocked subagent delegation) is aborted.
+      let timedOut = false;
+      let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+      const clearWatchdog = () => {
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = undefined;
+        }
+      };
+      const armWatchdog = () => {
+        clearWatchdog();
+        watchdogTimer = setTimeout(() => {
+          timedOut = true;
           fs.appendFileSync(
             getLogPath(),
-            `[${Date.now()}] BG Loop: Agent turn: ${JSON.stringify(event.content)}\n`,
+            `[${Date.now()}] BG Loop: No stream activity for ${BACKGROUND_RUN_TIMEOUT_MS}ms - aborting hung run.\n`,
           );
-          for (const part of event.content) {
-            if (part.type === 'text') {
-              accumulatedText += part.text;
+          void session.abort();
+        }, BACKGROUND_RUN_TIMEOUT_MS);
+        // The watchdog timer should never keep the daemon process alive by itself.
+        watchdogTimer.unref?.();
+      };
+
+      try {
+        armWatchdog();
+        for await (const event of stream) {
+          armWatchdog();
+          // Update the on-disk heartbeat on every event so a monitoring user
+          // (via `/loop status`) can distinguish "actively working" from
+          // "hung/stuck" during a long-running background turn, instead of
+          // only seeing a stale nextRun with no further signal (see
+          // report_11.md §6/§9-3).
+          recordHeartbeat('running');
+          fs.appendFileSync(
+            getLogPath(),
+            `[${Date.now()}] BG Loop: Event received: ${JSON.stringify(event)}\n`,
+          );
+          if (event.type === 'message' && event.role === 'agent') {
+            fs.appendFileSync(
+              getLogPath(),
+              `[${Date.now()}] BG Loop: Agent turn: ${JSON.stringify(event.content)}\n`,
+            );
+            for (const part of event.content) {
+              if (part.type === 'text') {
+                accumulatedText += part.text;
+              }
             }
           }
         }
+      } finally {
+        clearWatchdog();
       }
 
       fs.appendFileSync(
@@ -283,19 +328,20 @@ export function schedule(state: LoopState, config: Config): void {
       // The run ended (turn cap reached, or the model simply stopped)
       // without ever confirming it completed the requested task - e.g. it
       // went on a tangent instead of checking what it was asked to check
-      // (see report_11.md §3/§9-1). Do not surface this partial/uncertain
-      // output to the user, and do not treat it as a normal success: back
-      // off like a failure so a persistently distracted loop does not spam
-      // notifications or spin at full speed forever.
+      // (see report_11.md §3/§9-1), or it was aborted by the watchdog above
+      // because it went completely silent. Do not surface this
+      // partial/uncertain output to the user, and do not treat it as a
+      // normal success: back off like a failure so a persistently
+      // distracted/hung loop does not spam notifications or spin at full
+      // speed forever.
+      const incompleteReason = timedOut
+        ? `Run aborted after ${BACKGROUND_RUN_TIMEOUT_MS}ms with no stream activity (possible hung subagent delegation or stalled network call).`
+        : 'Run ended without a completion signal (possible distraction or turn-cap cutoff).';
       fs.appendFileSync(
         getLogPath(),
-        `[${Date.now()}] BG Loop: No completion signal detected - treating run as incomplete.\n`,
+        `[${Date.now()}] BG Loop: No completion signal detected - treating run as incomplete (timedOut=${timedOut}).\n`,
       );
-      rescheduleAfterSetback(
-        state,
-        config,
-        'Run ended without a completion signal (possible distraction or turn-cap cutoff).',
-      );
+      rescheduleAfterSetback(state, config, incompleteReason);
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       fs.appendFileSync(
