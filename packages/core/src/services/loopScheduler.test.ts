@@ -382,6 +382,74 @@ describe('loopScheduler', () => {
     }
   });
 
+  it('should notify final output even if the run self-stopped before the stream finished', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir, sessionId: 'test-session' },
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
+      fork: vi.fn().mockImplementation((params) => ({
+        ...rawMockConfig,
+        _params: { ...rawMockConfig._params, ...params },
+      })),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    const mockConfig = rawMockConfig as unknown as Config;
+
+    async function* mockSendStream() {
+      // Simulate the loop-stop tool having cleared state before the final
+      // assistant text reaches the scheduler's post-stream notification path.
+      clearState();
+      yield {
+        type: 'message',
+        streamId: 'mock-stream',
+        timestamp: new Date().toISOString(),
+        role: 'agent',
+        content: [
+          {
+            type: 'text',
+            text: 'text.txtを削除し、ループを停止しました。\n<<<LOOP_TASK_COMPLETE>>>',
+          },
+        ],
+      };
+    }
+
+    const sendStreamMock = vi.fn().mockReturnValue(mockSendStream());
+    vi.mocked(LegacyAgentSession).mockImplementation(
+      () =>
+        ({
+          sendStream: sendStreamMock,
+        }) as unknown as LegacyAgentSession,
+    );
+
+    const { sendNotification } = await import('../utils/notificationClient.js');
+    const sendNotificationMock = vi.mocked(sendNotification);
+
+    const interval = 5000;
+    const state: LoopState = {
+      nextRun: Date.now() + interval,
+      mode: 'fixed-prompt',
+      prompt: 'Delete text.txt and stop',
+      intervalMs: interval,
+    };
+
+    schedule(state, mockConfig);
+    vi.advanceTimersByTime(interval);
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+
+    expect(sendNotificationMock).toHaveBeenCalledWith(
+      JSON.stringify({
+        type: 'loop_result',
+        content: 'text.txtを削除し、ループを停止しました。',
+      }),
+    );
+    expect(loadState()).toBeUndefined();
+  });
+
   it('should treat a run without a completion signal as incomplete: no notification, retry backoff applied', async () => {
     const rawMockConfig = {
       _params: { targetDir: tempDir, sessionId: 'test-session' },

@@ -330,11 +330,6 @@ export function schedule(state: LoopState, config: Config): void {
         `[${Date.now()}] BG Loop: Stream finished. Result: ${accumulatedText}\n`,
       );
 
-      // Check if the state file still exists before rescheduling (e.g. self-stopping called clearState)
-      if (!fs.existsSync(getStatePath())) {
-        return;
-      }
-
       if (hasCompletionSignal(accumulatedText)) {
         const finalText = stripCompletionMarker(accumulatedText);
         if (finalText) {
@@ -352,6 +347,14 @@ export function schedule(state: LoopState, config: Config): void {
               }\n`,
             );
           }
+        }
+
+        // Check if the state file still exists before rescheduling (e.g.
+        // self-stopping called clearState). This must happen after sending the
+        // final notification so a successful "delete file, then loop-stop"
+        // run still reports its result to the parent UI.
+        if (!fs.existsSync(getStatePath())) {
+          return;
         }
 
         const newState: LoopState = {
