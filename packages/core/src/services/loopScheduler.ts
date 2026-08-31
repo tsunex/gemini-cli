@@ -404,7 +404,22 @@ export function loadState(): LoopState | undefined {
 export function saveState(state: LoopState): void {
   const statePath = getStatePath();
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+  // Write to a unique temp file first, then atomically rename it into
+  // place, instead of writing state.json directly. A direct write that is
+  // interrupted mid-flight (process crash, SIGKILL, power loss - all real
+  // possibilities for an unattended background daemon) would leave a
+  // truncated/corrupt state.json that loadState() cannot parse, silently
+  // losing the schedule. rename() is atomic on the same filesystem, so
+  // state.json is always either the previous complete state or the new
+  // complete state, never a partial write. Mirrors zero's
+  // persistTaskLocked() temp-file-then-rename pattern (see
+  // report_11.md §4/§9-6). The temp filename includes the PID and a
+  // timestamp so concurrent writers (e.g. the interactive CLI and the
+  // daemon) cannot collide on the same temp path.
+  const tmpPath = `${statePath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2));
+  fs.renameSync(tmpPath, statePath);
 }
 
 /**

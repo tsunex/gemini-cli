@@ -72,6 +72,24 @@ describe('loopScheduler', () => {
     expect(loaded).toEqual(state);
   });
 
+  it('should write state.json atomically, leaving no leftover temp file', () => {
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+    };
+
+    saveState(state);
+
+    // Only the final state.json should remain in the state directory -
+    // no `.tmp-*` file left behind from the write-then-rename sequence
+    // (see task_14.md / report_11.md §4/§9-6).
+    const entries = fs.readdirSync(tempDir);
+    expect(entries).toEqual(['state.json']);
+    expect(loadState()).toEqual(state);
+  });
+
   it('should return undefined if no state exists', () => {
     const loaded = loadState();
     expect(loaded).toBeUndefined();
