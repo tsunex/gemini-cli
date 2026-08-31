@@ -24,6 +24,18 @@ import {
 
 const LOCAL_MAINTENANCE_PROMPT = 'This is a maintenance prompt.';
 
+// Default background interval when the user does not specify one. 1 minute
+// is a practical lower bound for "monitoring/maintenance" use cases while
+// keeping API/rate-limit costs manageable (see design_loop_autonomous_v2.md
+// §4.4 discussion / task_08.md defect ④).
+const DEFAULT_INTERVAL_MS = 60000;
+
+// Hard floor for the background interval. Even if the user explicitly
+// requests something shorter (e.g. "-i 1s"), values below this are clamped
+// up to avoid runaway API usage / rate-limit exhaustion from an unattended
+// detached daemon.
+const MIN_INTERVAL_MS = 10000;
+
 export const loopCommand: SlashCommand = {
   name: 'loop',
   description:
@@ -83,7 +95,9 @@ export const loopCommand: SlashCommand = {
         };
       }
 
-      const intervalMs = parsed.intervalMs ?? 300000; // Default to 5 minutes if not specified; a 5s default is unsafe for unattended background execution.
+      const requestedIntervalMs = parsed.intervalMs ?? DEFAULT_INTERVAL_MS;
+      const intervalMs = Math.max(requestedIntervalMs, MIN_INTERVAL_MS);
+      const wasClamped = intervalMs !== requestedIntervalMs;
       const config = context.services.agentContext.config;
       const effectivePrompt = parsed.prompt ?? LOCAL_MAINTENANCE_PROMPT;
 
@@ -108,10 +122,13 @@ export const loopCommand: SlashCommand = {
       }
 
       const nextRunDate = new Date(state.nextRun);
+      const clampWarning = wasClamped
+        ? `\n  - WARNING: Requested interval (${requestedIntervalMs}ms) was too short and has been raised to the minimum of ${MIN_INTERVAL_MS}ms to avoid excessive API usage / rate-limit exhaustion.`
+        : '';
       return {
         type: 'message',
         messageType: 'info',
-        content: `Background loop has been scheduled successfully as detached daemon.\n  - Mode: ${state.mode}\n  - Interval: ${intervalMs}ms (${intervalMs / 1000} seconds)\n  - Next run: ${nextRunDate.toLocaleString()}\n  - Prompt: "${effectivePrompt}"\n  - WARNING: Background loop runs with all tool calls auto-approved (YOLO mode). Use "/loop stop" to cancel it at any time.`,
+        content: `Background loop has been scheduled successfully as detached daemon.\n  - Mode: ${state.mode}\n  - Interval: ${intervalMs}ms (${intervalMs / 1000} seconds)\n  - Next run: ${nextRunDate.toLocaleString()}\n  - Prompt: "${effectivePrompt}"\n  - WARNING: Background loop runs with all tool calls auto-approved (YOLO mode). Use "/loop stop" to cancel it at any time.${clampWarning}`,
       };
     }
 

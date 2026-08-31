@@ -180,7 +180,7 @@ describe('loopCommand', () => {
     }
   });
 
-  it('should default to a 5 minute interval when none is specified', async () => {
+  it('should default to a 1 minute interval when none is specified', async () => {
     vi.mocked(core.parseLoopArgs).mockReturnValue({
       mode: 'fixed-prompt',
       interval: undefined,
@@ -192,9 +192,33 @@ describe('loopCommand', () => {
     await action(mockContext, '--background Check server health');
 
     expect(core.startLoopDaemon).toHaveBeenCalledWith(
-      expect.objectContaining({ intervalMs: 300000 }),
+      expect.objectContaining({ intervalMs: 60000 }),
       expect.any(Object),
     );
+  });
+
+  it('should clamp an unsafely short requested interval up to the 10 second floor and warn', async () => {
+    vi.mocked(core.parseLoopArgs).mockReturnValue({
+      mode: 'fixed-prompt',
+      interval: '1s',
+      intervalMs: 1000,
+      prompt: 'Check server health',
+      background: true,
+    });
+
+    const result = await action(
+      mockContext,
+      '-i 1s --background Check server health',
+    );
+
+    expect(core.startLoopDaemon).toHaveBeenCalledWith(
+      expect.objectContaining({ intervalMs: 10000 }),
+      expect.any(Object),
+    );
+    expect(result).toBeDefined();
+    if (result && 'type' in result && result.type === 'message') {
+      expect(result.content).toContain('raised to the minimum of 10000ms');
+    }
   });
 
   it('should return an error message instead of throwing when a daemon is already running', async () => {
