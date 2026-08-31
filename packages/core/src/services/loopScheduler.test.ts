@@ -485,7 +485,10 @@ describe('loopScheduler', () => {
     stopDaemon();
 
     expect(killSpy).toHaveBeenCalledWith(pid, 0);
-    expect(killSpy).toHaveBeenCalledWith(pid, 'SIGTERM');
+    // Signals the whole process group (-pid) rather than just the PID, so
+    // any subprocesses spawned during a background run are also terminated
+    // (see task_12.md / report_11.md §2/§9-4).
+    expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
 
     // The daemon ignores SIGTERM (simulated stuck process) and is still
     // alive when the grace period elapses.
@@ -493,7 +496,7 @@ describe('loopScheduler', () => {
     vi.advanceTimersByTime(TERMINATION_GRACE_MS);
 
     expect(killSpy).toHaveBeenCalledWith(pid, 0);
-    expect(killSpy).toHaveBeenCalledWith(pid, 'SIGKILL');
+    expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGKILL');
   });
 
   it('should not send SIGKILL if the daemon exits on its own during the grace period', () => {
@@ -526,6 +529,39 @@ describe('loopScheduler', () => {
     vi.advanceTimersByTime(TERMINATION_GRACE_MS);
 
     expect(killSpy).toHaveBeenCalledWith(pid, 0);
+    expect(killSpy).not.toHaveBeenCalledWith(-pid, 'SIGKILL');
     expect(killSpy).not.toHaveBeenCalledWith(pid, 'SIGKILL');
+  });
+
+  it('should fall back to signaling just the PID if process-group signaling is unavailable', () => {
+    const pid = 424244;
+    const killSpy = vi
+      .spyOn(process, 'kill')
+      .mockImplementation((targetPid, signal) => {
+        if (signal === 0) {
+          return true; // liveness checks always succeed
+        }
+        if (typeof targetPid === 'number' && targetPid < 0) {
+          // Simulate an environment where group signaling is unavailable
+          // (e.g. the process is not a group leader).
+          throw new Error('ESRCH: no such process group');
+        }
+        return true;
+      });
+
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid,
+    };
+    saveState(state);
+
+    stopDaemon();
+
+    expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
+    // Falls back to the plain PID once the group-signal attempt throws.
+    expect(killSpy).toHaveBeenCalledWith(pid, 'SIGTERM');
   });
 });

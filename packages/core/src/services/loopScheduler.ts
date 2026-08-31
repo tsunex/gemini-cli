@@ -522,16 +522,41 @@ export function startDaemon(
 // TerminateProcessTree grace->SIGKILL pattern (see report_11.md §2/§9-2).
 export const TERMINATION_GRACE_MS = 3000;
 
+/**
+ * Signals the daemon's whole process group (negative PID) rather than just
+ * its own PID, so subprocesses it spawned (e.g. shell commands run via
+ * subagent/tool calls during a background run) are also terminated instead
+ * of being orphaned. `startDaemon()` spawns the daemon with
+ * `detached: true`, which on POSIX makes it the leader of a new process
+ * group, so `-pid` targets that whole group. Falls back to signaling just
+ * the PID on Windows (no POSIX process-group signaling) or if group
+ * signaling is otherwise unavailable. Mirrors zero's
+ * ConfigureProcessGroup/processSignalTarget pattern (see
+ * report_11.md §2/§9-4).
+ */
+function killDaemonTree(pid: number, signal: NodeJS.Signals): void {
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-pid, signal);
+      return;
+    } catch {
+      // Fall through to single-PID signaling below (e.g. the process is not
+      // a group leader).
+    }
+  }
+  process.kill(pid, signal);
+}
+
 export function stopDaemon(): void {
   const state = loadState();
   if (state && state.pid) {
     const pid = state.pid;
     try {
       process.kill(pid, 0);
-      process.kill(pid, 'SIGTERM');
+      killDaemonTree(pid, 'SIGTERM');
       fs.appendFileSync(
         getLogPath(),
-        `[${Date.now()}] Sent SIGTERM to daemon PID: ${pid}\n`,
+        `[${Date.now()}] Sent SIGTERM to daemon process group (PID: ${pid}).\n`,
       );
 
       // Fire-and-forget escalation check: if the daemon is still alive
@@ -547,7 +572,7 @@ export function stopDaemon(): void {
             getLogPath(),
             `[${Date.now()}] Daemon PID ${pid} still alive ${TERMINATION_GRACE_MS}ms after SIGTERM; escalating to SIGKILL.\n`,
           );
-          process.kill(pid, 'SIGKILL');
+          killDaemonTree(pid, 'SIGKILL');
         } catch {
           // Already exited on its own during the grace period - nothing to
           // escalate.
