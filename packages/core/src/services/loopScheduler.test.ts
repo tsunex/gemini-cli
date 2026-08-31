@@ -18,6 +18,7 @@ import {
   startDaemon,
   stopDaemon,
   isDaemonRunning,
+  normalizeStaleState,
   TERMINATION_GRACE_MS,
   LoopAlreadyRunningError,
   type LoopState,
@@ -563,5 +564,64 @@ describe('loopScheduler', () => {
     expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
     // Falls back to the plain PID once the group-signal attempt throws.
     expect(killSpy).toHaveBeenCalledWith(pid, 'SIGTERM');
+  });
+
+  describe('normalizeStaleState', () => {
+    it('should clear the stale pid when the loop was idle (not mid-run)', () => {
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        intervalMs: 5000,
+        pid: 12345,
+        currentPhase: 'idle',
+      };
+
+      const normalized = normalizeStaleState(state);
+
+      expect(normalized).toBeDefined();
+      expect(normalized!.pid).toBeUndefined();
+      expect(normalized!.currentPhase).toBe('idle');
+      // Not mid-run, so this is not counted as a crash-induced setback.
+      expect(normalized!.retryCount).toBeUndefined();
+    });
+
+    it('should increment retryCount and reset phase when the daemon died mid-run', () => {
+      const state: LoopState = {
+        nextRun: Date.now() - 1000, // overdue, as a crashed run would leave it
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        intervalMs: 5000,
+        pid: 12345,
+        currentPhase: 'running',
+        retryCount: 2,
+      };
+
+      const normalized = normalizeStaleState(state);
+
+      expect(normalized).toBeDefined();
+      expect(normalized!.pid).toBeUndefined();
+      expect(normalized!.currentPhase).toBe('idle');
+      expect(normalized!.retryCount).toBe(3);
+      expect(normalized!.lastError).toContain('found dead');
+    });
+
+    it('should give up and clear state if the daemon keeps crashing mid-run past the retry limit', () => {
+      const state: LoopState = {
+        nextRun: Date.now() - 1000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        intervalMs: 5000,
+        pid: 12345,
+        currentPhase: 'running',
+        retryCount: 10, // already at the max
+      };
+      saveState(state);
+
+      const normalized = normalizeStaleState(state);
+
+      expect(normalized).toBeUndefined();
+      expect(loadState()).toBeUndefined();
+    });
   });
 });

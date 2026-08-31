@@ -683,14 +683,26 @@ export async function main() {
     startNotificationServer(config);
 
     // 2. オートスタートの処理 (デーモンが死んでいるがスケジュールが残っている場合、新デーモンを起動)
-    const { loadLoopState, isLoopDaemonRunning, startLoopDaemon } =
-      await import('@google/gemini-cli-core');
+    const {
+      loadLoopState,
+      isLoopDaemonRunning,
+      startLoopDaemon,
+      normalizeStaleLoopState,
+    } = await import('@google/gemini-cli-core');
     const loopState = loadLoopState();
     if (loopState && !isLoopDaemonRunning()) {
-      try {
-        startLoopDaemon(loopState, config);
-      } catch (e) {
-        debugLogger.error('Failed to auto-start loop daemon:', e);
+      // The previous daemon is gone (crash, OS reboot, etc). Normalize any
+      // stale in-flight state before restarting so `/loop status` does not
+      // keep claiming a run is in progress forever, and so a daemon that
+      // keeps crashing right after every restart eventually gives up
+      // instead of respawning in a tight loop (see task_13.md).
+      const normalized = normalizeStaleLoopState(loopState);
+      if (normalized) {
+        try {
+          startLoopDaemon(normalized, config);
+        } catch (e) {
+          debugLogger.error('Failed to auto-start loop daemon:', e);
+        }
       }
     }
 

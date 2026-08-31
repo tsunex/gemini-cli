@@ -598,6 +598,67 @@ export function isDaemonRunning(): boolean {
   }
 }
 
+/**
+ * Normalizes on-disk loop state that was left behind by a daemon process
+ * which is no longer running (crash, OS reboot, unexpected kill) before it
+ * is used to decide whether/how to restart. Without this:
+ *  - a stale `currentPhase: 'running'` would make `/loop status` claim a
+ *    run is still in progress forever, even though the process that would
+ *    ever update it again is gone;
+ *  - a stale `pid` could later coincidentally match an unrelated reused
+ *    PID once the OS recycles it, causing `isDaemonRunning()` to report a
+ *    false positive.
+ *
+ * A daemon found dead while `currentPhase` was `'running'` is also treated
+ * as a setback (retryCount is incremented) so a loop whose daemon keeps
+ * crashing immediately after every auto-restart still eventually gives up,
+ * instead of respawning forever in a tight crash loop.
+ *
+ * Mirrors zero's `loadTasks()` normalizing `StatusRunning` -> `StatusError`
+ * on load (see report_11.md §2/§9-5). Note: unlike openclaude's
+ * `verifyBackgroundSessionProcessIdentity()`, this does not attempt to
+ * verify that a live PID is actually *our* daemon and not an unrelated
+ * reused PID (that would require reading platform-specific process
+ * metadata such as `/proc/<pid>/cmdline`); this is called out as follow-up
+ * work in task_13.md rather than implemented here.
+ *
+ * Returns the normalized state to restart with, or `undefined` if the loop
+ * should be given up on instead (max retries exceeded) - in which case the
+ * on-disk state has already been cleared.
+ */
+export function normalizeStaleState(state: LoopState): LoopState | undefined {
+  const wasMidRun = state.currentPhase === 'running';
+  if (!wasMidRun) {
+    return { ...state, pid: undefined };
+  }
+
+  const retryCount = (state.retryCount ?? 0) + 1;
+  if (retryCount > MAX_RETRY_COUNT) {
+    fs.appendFileSync(
+      getLogPath(),
+      `[${Date.now()}] BG Loop: Daemon was found dead mid-run ${
+        retryCount - 1
+      } times in a row. Giving up and clearing schedule.\n`,
+    );
+    clearState();
+    return undefined;
+  }
+
+  fs.appendFileSync(
+    getLogPath(),
+    `[${Date.now()}] BG Loop: Detected stale in-flight state from a dead daemon (pid: ${state.pid}); normalizing before restart (setback #${retryCount}).\n`,
+  );
+
+  return {
+    ...state,
+    pid: undefined,
+    currentPhase: 'idle',
+    retryCount,
+    lastError:
+      'Daemon process was found dead while a run was in flight (crash or unexpected termination).',
+  };
+}
+
 // This process is the actual detached daemon spawned by startDaemon() (see
 // gemini.tsx's matching `process.argv.includes('loop') && ...('daemon')`
 // check that drives auto-start there). Only the daemon process should force
