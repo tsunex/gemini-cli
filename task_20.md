@@ -74,3 +74,15 @@ auto-approved」と警告している。そのため、対話中の親セッシ�
 
 この修正により、`text.txt` 削除 + `loop-stop`
 のシナリオで、モデルが「削除/loop-stopツールが見えない」と迷走してターン上限に達する問題を解消する。
+
+## 追記: 実機再テストでの追加判明事項
+
+この Task 20 の修正だけでは不十分だった。`Config.fork()` で子Configの
+`mainAgentTools` を `undefined` にしても、fork後に
+`child._toolRegistry = this._toolRegistry` として親の `ToolRegistry`
+インスタンスを共有していたため、ツール宣言生成時には `ToolRegistry`
+内部の親Config参照が使われ続けていた。
+
+このため、実機再テストでは依然として `loop-stop` / `run_shell_command` /
+`write_file` がモデルに見えず、`MAX_TURNS_EXCEEDED` になった。追加修正は Task
+21 で実施した。

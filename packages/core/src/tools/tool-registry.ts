@@ -255,8 +255,12 @@ export class ToolRegistry {
   /**
    * Creates a shallow clone of the registry and its current known tools.
    */
-  clone(): ToolRegistry {
-    const clone = new ToolRegistry(this.config, this.messageBus);
+  clone(config: Config = this.config): ToolRegistry {
+    const clone = new ToolRegistry(
+      config,
+      this.messageBus,
+      this.isMainRegistry,
+    );
     clone.allKnownTools = new Map(this.allKnownTools);
     return clone;
   }

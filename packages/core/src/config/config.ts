@@ -1462,7 +1462,7 @@ export class Config implements McpContext, AgentLoopContext {
 
     // --- Inherit Initialized Services from parent ---
     // These services are expensive to create or have global state.
-    child._toolRegistry = this._toolRegistry;
+    child._toolRegistry = this._toolRegistry.clone(child);
     child._promptRegistry = this._promptRegistry;
     child._resourceRegistry = this._resourceRegistry;
     child.agentRegistry = this.agentRegistry;
