@@ -444,16 +444,46 @@ export function startDaemon(
   }
 }
 
+// Grace period between SIGTERM and a forceful SIGKILL escalation when
+// stopping the daemon. Registering a SIGTERM handler (see
+// handleTerminationSignal below) is usually enough, but a daemon stuck in a
+// blocking/native call could still ignore it indefinitely; without this
+// escalation `/loop stop` could silently leave a zombie daemon running
+// forever. Mirrors openclaude's terminateBackgroundProcessTree() and zero's
+// TerminateProcessTree grace->SIGKILL pattern (see report_11.md §2/§9-2).
+export const TERMINATION_GRACE_MS = 3000;
+
 export function stopDaemon(): void {
   const state = loadState();
   if (state && state.pid) {
+    const pid = state.pid;
     try {
-      process.kill(state.pid, 0);
-      process.kill(state.pid, 'SIGTERM');
+      process.kill(pid, 0);
+      process.kill(pid, 'SIGTERM');
       fs.appendFileSync(
         getLogPath(),
-        `[${Date.now()}] Sent SIGTERM to daemon PID: ${state.pid}\n`,
+        `[${Date.now()}] Sent SIGTERM to daemon PID: ${pid}\n`,
       );
+
+      // Fire-and-forget escalation check: if the daemon is still alive
+      // after the grace period, force-kill it. Runs independently of the
+      // caller (stopDaemon() itself stays synchronous so existing callers -
+      // slash command, tool invocation, auto-restart - do not need to
+      // change) and is unref()'d so it never keeps the calling process
+      // alive on its own.
+      setTimeout(() => {
+        try {
+          process.kill(pid, 0);
+          fs.appendFileSync(
+            getLogPath(),
+            `[${Date.now()}] Daemon PID ${pid} still alive ${TERMINATION_GRACE_MS}ms after SIGTERM; escalating to SIGKILL.\n`,
+          );
+          process.kill(pid, 'SIGKILL');
+        } catch {
+          // Already exited on its own during the grace period - nothing to
+          // escalate.
+        }
+      }, TERMINATION_GRACE_MS).unref();
     } catch {
       // Ignore if process is already dead or permission denied
     }

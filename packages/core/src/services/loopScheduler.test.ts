@@ -16,7 +16,9 @@ import {
   saveState,
   clearState,
   startDaemon,
+  stopDaemon,
   isDaemonRunning,
+  TERMINATION_GRACE_MS,
   LoopAlreadyRunningError,
   type LoopState,
 } from './loopScheduler.js';
@@ -377,5 +379,73 @@ describe('loopScheduler', () => {
     expect(() => startDaemon(state, {} as Config)).toThrow(
       LoopAlreadyRunningError,
     );
+  });
+
+  it('should escalate to SIGKILL if the daemon is still alive after the grace period', () => {
+    const pid = 424242; // arbitrary fake PID; process.kill is fully mocked below
+    const stillAlive = true;
+    const killSpy = vi
+      .spyOn(process, 'kill')
+      .mockImplementation((_pid, signal) => {
+        if (signal === 0 && !stillAlive) {
+          throw new Error('ESRCH: no such process');
+        }
+        return true;
+      });
+
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid,
+    };
+    saveState(state);
+
+    stopDaemon();
+
+    expect(killSpy).toHaveBeenCalledWith(pid, 0);
+    expect(killSpy).toHaveBeenCalledWith(pid, 'SIGTERM');
+
+    // The daemon ignores SIGTERM (simulated stuck process) and is still
+    // alive when the grace period elapses.
+    killSpy.mockClear();
+    vi.advanceTimersByTime(TERMINATION_GRACE_MS);
+
+    expect(killSpy).toHaveBeenCalledWith(pid, 0);
+    expect(killSpy).toHaveBeenCalledWith(pid, 'SIGKILL');
+  });
+
+  it('should not send SIGKILL if the daemon exits on its own during the grace period', () => {
+    const pid = 424243;
+    let stillAlive = true;
+    const killSpy = vi
+      .spyOn(process, 'kill')
+      .mockImplementation((_pid, signal) => {
+        if (signal === 0 && !stillAlive) {
+          throw new Error('ESRCH: no such process');
+        }
+        return true;
+      });
+
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid,
+    };
+    saveState(state);
+
+    stopDaemon();
+
+    // Simulate the daemon actually honoring SIGTERM and exiting before the
+    // grace period elapses.
+    stillAlive = false;
+    killSpy.mockClear();
+    vi.advanceTimersByTime(TERMINATION_GRACE_MS);
+
+    expect(killSpy).toHaveBeenCalledWith(pid, 0);
+    expect(killSpy).not.toHaveBeenCalledWith(pid, 'SIGKILL');
   });
 });
