@@ -18,9 +18,20 @@ export interface LoopState {
   prompt: string;
   intervalMs?: number;
   pid?: number;
+  /** Number of consecutive execution failures since the last success. */
+  retryCount?: number;
+  /** Message of the most recent execution failure, if any. */
+  lastError?: string;
 }
 
 const STATE_FILE = 'state.json';
+
+// Consecutive-failure handling: back off exponentially, but never wait longer
+// than MAX_BACKOFF_MS, and give up (stop rescheduling) after MAX_RETRY_COUNT
+// consecutive failures so a persistently broken loop does not retry forever
+// and does not fail silently either (see design_loop_autonomous_v2.md §4.4).
+const MAX_RETRY_COUNT = 10;
+const MAX_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
 
 function getStatePath(): string {
   return path.join(Storage.getProjectLoopStateDir(), STATE_FILE);
@@ -120,6 +131,9 @@ export function schedule(state: LoopState, config: Config): void {
         const newState: LoopState = {
           ...state,
           nextRun: Date.now() + (state.intervalMs ?? 0),
+          // Reset failure tracking after a successful run.
+          retryCount: 0,
+          lastError: undefined,
         };
         fs.appendFileSync(
           getLogPath(),
@@ -137,6 +151,48 @@ export function schedule(state: LoopState, config: Config): void {
         severity: 'error',
         message: `Error in loop execution: ${errorMessage}`,
       });
+
+      // Do not reschedule if the loop was stopped/cleared while this run
+      // was in flight.
+      if (!fs.existsSync(getStatePath())) {
+        return;
+      }
+
+      const retryCount = (state.retryCount ?? 0) + 1;
+
+      if (retryCount > MAX_RETRY_COUNT) {
+        fs.appendFileSync(
+          getLogPath(),
+          `[${Date.now()}] BG Loop: Giving up after ${retryCount - 1} consecutive failures. Stopping loop. Run "/loop <interval> <prompt> --background" to restart once the issue is resolved.\n`,
+        );
+        coreEvents.emit(CoreEvent.UserFeedback, {
+          severity: 'error',
+          message: `Loop stopped automatically after ${
+            retryCount - 1
+          } consecutive failures. Last error: ${errorMessage}`,
+        });
+        clearState();
+        return;
+      }
+
+      // Exponential backoff with a ceiling so a flaky loop retries with
+      // increasing patience instead of hammering the API or spinning
+      // forever with no delay at all.
+      const backoffMs = Math.min(
+        (state.intervalMs ?? 0) * 2 ** retryCount,
+        MAX_BACKOFF_MS,
+      );
+      const newState: LoopState = {
+        ...state,
+        nextRun: Date.now() + backoffMs,
+        retryCount,
+        lastError: errorMessage,
+      };
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] BG Loop: Rescheduling after failure #${retryCount} in ${backoffMs}ms.\n`,
+      );
+      schedule(newState, config);
     }
   }, delay);
 }
@@ -170,6 +226,22 @@ function isLoopState(obj: unknown): obj is LoopState {
     'pid' in obj &&
     typeof obj.pid !== 'number' &&
     typeof obj.pid !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'retryCount' in obj &&
+    typeof obj.retryCount !== 'number' &&
+    typeof obj.retryCount !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'lastError' in obj &&
+    typeof obj.lastError !== 'string' &&
+    typeof obj.lastError !== 'undefined'
   ) {
     return false;
   }
@@ -224,7 +296,31 @@ export function clearTimer(): void {
   }
 }
 
-export function startDaemon(state: LoopState, _config: Config): void {
+/**
+ * Thrown when a caller tries to start a new background loop daemon while one
+ * is already running. Prevents multiple daemons from racing to write the
+ * same state.json / execute the same prompt concurrently (see
+ * design_loop_autonomous_v2.md §4.3).
+ */
+export class LoopAlreadyRunningError extends Error {
+  constructor(pid: number) {
+    super(
+      `Loop daemon is already running (PID: ${pid}). Run "/loop stop" first if you want to reschedule.`,
+    );
+    this.name = 'LoopAlreadyRunningError';
+  }
+}
+
+export function startDaemon(
+  state: LoopState,
+  _config: Config,
+  options: { force?: boolean } = {},
+): void {
+  const existing = loadState();
+  if (!options.force && existing?.pid && isDaemonRunning()) {
+    throw new LoopAlreadyRunningError(existing.pid);
+  }
+
   stopDaemon();
 
   const statePath = getStatePath();

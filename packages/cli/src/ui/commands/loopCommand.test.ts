@@ -9,15 +9,26 @@ import { loopCommand } from './loopCommand.js';
 import { CommandKind, type CommandContext } from './types.js';
 import * as core from '@google/gemini-cli-core';
 
-vi.mock('@google/gemini-cli-core', () => ({
-  parseLoopArgs: vi.fn(),
-  buildFixedPrompt: vi.fn(() => 'Mocked fixed prompt instructions'),
-  buildDynamicPrompt: vi.fn(() => 'Mocked dynamic prompt instructions'),
-  loadLoopState: vi.fn(),
-  startLoopDaemon: vi.fn(),
-  stopLoopDaemon: vi.fn(),
-  isLoopDaemonRunning: vi.fn(),
-}));
+vi.mock('@google/gemini-cli-core', () => {
+  class MockLoopAlreadyRunningError extends Error {
+    constructor(pid: number) {
+      super(
+        `Loop daemon is already running (PID: ${pid}). Run "/loop stop" first if you want to reschedule.`,
+      );
+      this.name = 'LoopAlreadyRunningError';
+    }
+  }
+  return {
+    parseLoopArgs: vi.fn(),
+    buildFixedPrompt: vi.fn(() => 'Mocked fixed prompt instructions'),
+    buildDynamicPrompt: vi.fn(() => 'Mocked dynamic prompt instructions'),
+    loadLoopState: vi.fn(),
+    startLoopDaemon: vi.fn(),
+    stopLoopDaemon: vi.fn(),
+    isLoopDaemonRunning: vi.fn(),
+    LoopAlreadyRunningError: MockLoopAlreadyRunningError,
+  };
+});
 
 describe('loopCommand', () => {
   let mockContext: CommandContext;
@@ -147,5 +158,87 @@ describe('loopCommand', () => {
       type: 'submit_prompt',
       content: 'Mocked fixed prompt instructions',
     });
+  });
+
+  it('should include the YOLO warning in the background scheduling message', async () => {
+    vi.mocked(core.parseLoopArgs).mockReturnValue({
+      mode: 'fixed-prompt',
+      interval: '10s',
+      intervalMs: 10000,
+      prompt: 'Check server health',
+      background: true,
+    });
+
+    const result = await action(
+      mockContext,
+      '-i 10s --background Check server health',
+    );
+
+    expect(result).toBeDefined();
+    if (result && 'type' in result && result.type === 'message') {
+      expect(result.content).toContain('auto-approved (YOLO mode)');
+    }
+  });
+
+  it('should default to a 5 minute interval when none is specified', async () => {
+    vi.mocked(core.parseLoopArgs).mockReturnValue({
+      mode: 'fixed-prompt',
+      interval: undefined,
+      intervalMs: undefined,
+      prompt: 'Check server health',
+      background: true,
+    });
+
+    await action(mockContext, '--background Check server health');
+
+    expect(core.startLoopDaemon).toHaveBeenCalledWith(
+      expect.objectContaining({ intervalMs: 300000 }),
+      expect.any(Object),
+    );
+  });
+
+  it('should return an error message instead of throwing when a daemon is already running', async () => {
+    vi.mocked(core.parseLoopArgs).mockReturnValue({
+      mode: 'fixed-prompt',
+      interval: '10s',
+      intervalMs: 10000,
+      prompt: 'Check server health',
+      background: true,
+    });
+    vi.mocked(core.startLoopDaemon).mockImplementation(() => {
+      throw new core.LoopAlreadyRunningError(1234);
+    });
+
+    const result = await action(
+      mockContext,
+      '-i 10s --background Check server health',
+    );
+
+    expect(result).toEqual({
+      type: 'message',
+      messageType: 'error',
+      content: expect.stringContaining('Loop daemon is already running'),
+    });
+  });
+
+  it('should include failure diagnostics in status when the loop has retried', async () => {
+    vi.mocked(core.loadLoopState).mockReturnValue({
+      nextRun: 1774900000000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid: 1234,
+      retryCount: 3,
+      lastError: 'ECONNRESET',
+    });
+    vi.mocked(core.isLoopDaemonRunning).mockReturnValue(true);
+
+    const result = await action(mockContext, 'status');
+
+    expect(result).toBeDefined();
+    if (result && 'type' in result && result.type === 'message') {
+      expect(result.content).toContain('Consecutive Failures: 3');
+      expect(result.content).toContain('Last Error: ECONNRESET');
+    }
   });
 });

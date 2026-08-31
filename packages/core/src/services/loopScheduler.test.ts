@@ -15,6 +15,9 @@ import {
   loadState,
   saveState,
   clearState,
+  startDaemon,
+  isDaemonRunning,
+  LoopAlreadyRunningError,
   type LoopState,
 } from './loopScheduler.js';
 import { LegacyAgentSession } from '../agent/legacy-agent-session.js';
@@ -23,6 +26,10 @@ vi.mock('../agent/legacy-agent-session.js', () => ({
   LegacyAgentSession: vi.fn().mockImplementation(() => ({
     send: vi.fn().mockResolvedValue({}),
   })),
+}));
+
+vi.mock('../utils/notificationClient.js', () => ({
+  sendNotification: vi.fn().mockResolvedValue(undefined),
 }));
 
 describe('loopScheduler', () => {
@@ -127,8 +134,8 @@ describe('loopScheduler', () => {
         }) as unknown as LegacyAgentSession,
     );
 
-    const { coreEvents } = await import('../utils/events.js');
-    const emitSpy = vi.spyOn(coreEvents, 'emit');
+    const { sendNotification } = await import('../utils/notificationClient.js');
+    const sendNotificationMock = vi.mocked(sendNotification);
 
     const interval = 5000;
     const state: LoopState = {
@@ -163,11 +170,13 @@ describe('loopScheduler', () => {
       expect.objectContaining({ approvalMode: 'yolo' }),
     );
 
-    expect(emitSpy).toHaveBeenCalledWith(
-      'user-feedback',
-      expect.objectContaining({
-        severity: 'info',
-        message: expect.stringContaining('System status is normal.'),
+    // The daemon process cannot rely on in-process events reaching the UI
+    // (it may be a fully detached process), so results are surfaced via the
+    // cross-process IPC notification channel instead.
+    expect(sendNotificationMock).toHaveBeenCalledWith(
+      JSON.stringify({
+        type: 'loop_result',
+        content: 'System status is normal.',
       }),
     );
 
@@ -197,5 +206,94 @@ describe('loopScheduler', () => {
 
     // State file is preserved for auto-restart
     expect(loadState()).toEqual(state);
+  });
+
+  it('should reschedule with exponential backoff and increment retryCount on failure', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir, sessionId: 'test-session' },
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
+      fork: vi.fn().mockImplementation((params) => ({
+        ...rawMockConfig,
+        _params: { ...rawMockConfig._params, ...params },
+      })),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockRejectedValue(new Error('boom')),
+      }),
+    };
+    const mockConfig = rawMockConfig as unknown as Config;
+
+    const interval = 1000;
+    const state: LoopState = {
+      nextRun: Date.now() + interval,
+      mode: 'fixed-prompt',
+      prompt: 'Verify system',
+      intervalMs: interval,
+      retryCount: 2,
+    };
+
+    schedule(state, mockConfig);
+    vi.advanceTimersByTime(interval);
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+
+    const loaded = loadState();
+    expect(loaded).toBeDefined();
+    expect(loaded!.retryCount).toBe(3);
+    expect(loaded!.lastError).toContain('boom');
+    // backoff should push nextRun out further than the plain interval
+    expect(loaded!.nextRun).toBeGreaterThan(Date.now() + interval);
+  });
+
+  it('should stop rescheduling and clear state after exceeding the max retry count', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir, sessionId: 'test-session' },
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
+      fork: vi.fn().mockImplementation((params) => ({
+        ...rawMockConfig,
+        _params: { ...rawMockConfig._params, ...params },
+      })),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockRejectedValue(new Error('still broken')),
+      }),
+    };
+    const mockConfig = rawMockConfig as unknown as Config;
+
+    const interval = 1000;
+    const state: LoopState = {
+      nextRun: Date.now() + interval,
+      mode: 'fixed-prompt',
+      prompt: 'Verify system',
+      intervalMs: interval,
+      retryCount: 10, // already at the max; this failure should tip it over
+    };
+
+    schedule(state, mockConfig);
+    vi.advanceTimersByTime(interval);
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+
+    expect(loadState()).toBeUndefined();
+  });
+
+  it('should prevent starting a second daemon while one is already running', () => {
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid: process.pid, // use our own pid so process.kill(pid, 0) succeeds
+    };
+    saveState(state);
+
+    expect(isDaemonRunning()).toBe(true);
+    expect(() => startDaemon(state, {} as Config)).toThrow(
+      LoopAlreadyRunningError,
+    );
   });
 });

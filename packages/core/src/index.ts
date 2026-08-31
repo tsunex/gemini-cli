@@ -332,6 +332,7 @@ export {
   stopDaemon as stopLoopDaemon,
   isDaemonRunning as isLoopDaemonRunning,
   clearTimer as clearLoopTimer,
+  LoopAlreadyRunningError,
   type LoopState,
 } from './services/loopScheduler.js';
 export * from './services/loopNotificationWatcher.js';
