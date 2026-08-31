@@ -22,6 +22,22 @@ export interface LoopState {
   retryCount?: number;
   /** Message of the most recent execution failure, if any. */
   lastError?: string;
+  /**
+   * Coarse-grained lifecycle phase of the loop, updated independently of
+   * `nextRun`. Lets `/loop status` distinguish "waiting for the next
+   * scheduled run" from "a run is currently in flight", which `nextRun`
+   * alone cannot express once a run has started (see
+   * report_11.md §6/§9-3).
+   */
+  currentPhase?: 'idle' | 'running';
+  /**
+   * Timestamp of the most recent observed activity: either a background
+   * run starting, a stream event being received during a run, or a run
+   * finishing. Lets a monitoring user/tool notice a daemon that is alive
+   * (per PID) but has gone silent/stuck mid-run, instead of only seeing a
+   * stale `nextRun` with no further signal.
+   */
+  lastHeartbeatAt?: number;
 }
 
 const STATE_FILE = 'state.json';
@@ -149,7 +165,9 @@ function rescheduleAfterSetback(
 }
 
 export function schedule(state: LoopState, config: Config): void {
-  saveState(state);
+  // Persist as "idle" (waiting for the next scheduled run) - recordHeartbeat
+  // flips this to 'running' once the timer actually fires and a run starts.
+  saveState({ ...state, currentPhase: 'idle' });
   const now = Date.now();
   const delay = state.nextRun - now;
 
@@ -162,6 +180,8 @@ export function schedule(state: LoopState, config: Config): void {
     if (!fs.existsSync(getStatePath())) {
       return;
     }
+
+    recordHeartbeat('running');
 
     const backgroundConfig = config.fork({
       approvalMode: ApprovalMode.YOLO, // Force auto-approval for silent background check
@@ -193,6 +213,12 @@ export function schedule(state: LoopState, config: Config): void {
       });
 
       for await (const event of stream) {
+        // Update the on-disk heartbeat on every event so a monitoring user
+        // (via `/loop status`) can distinguish "actively working" from
+        // "hung/stuck" during a long-running background turn, instead of
+        // only seeing a stale nextRun with no further signal (see
+        // report_11.md §6/§9-3).
+        recordHeartbeat('running');
         fs.appendFileSync(
           getLogPath(),
           `[${Date.now()}] BG Loop: Event received: ${JSON.stringify(event)}\n`,
@@ -332,6 +358,23 @@ function isLoopState(obj: unknown): obj is LoopState {
     return false;
   }
 
+  if (
+    'currentPhase' in obj &&
+    obj.currentPhase !== 'idle' &&
+    obj.currentPhase !== 'running' &&
+    typeof obj.currentPhase !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'lastHeartbeatAt' in obj &&
+    typeof obj.lastHeartbeatAt !== 'number' &&
+    typeof obj.lastHeartbeatAt !== 'undefined'
+  ) {
+    return false;
+  }
+
   return true;
 }
 
@@ -362,6 +405,32 @@ export function saveState(state: LoopState): void {
   const statePath = getStatePath();
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
   fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+}
+
+/**
+ * Records a heartbeat (current phase + timestamp) into the on-disk state
+ * without disturbing `nextRun`/the in-memory scheduling timer. Used during
+ * an in-flight background run so `/loop status` can tell "waiting for next
+ * scheduled run" apart from "a run is currently in progress", and detect a
+ * stuck run by how long ago the heartbeat was last updated (see
+ * report_11.md §6/§9-3). No-ops if the loop has been stopped (state.json
+ * removed) since this run started, so a stopped loop's state file is never
+ * accidentally resurrected by a stale in-flight run.
+ */
+function recordHeartbeat(phase: 'idle' | 'running'): void {
+  const statePath = getStatePath();
+  if (!fs.existsSync(statePath)) {
+    return;
+  }
+  const current = loadState();
+  if (!current) {
+    return;
+  }
+  saveState({
+    ...current,
+    currentPhase: phase,
+    lastHeartbeatAt: Date.now(),
+  });
 }
 
 export function clearState(): void {

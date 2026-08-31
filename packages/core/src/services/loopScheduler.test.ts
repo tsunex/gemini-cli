@@ -193,11 +193,91 @@ describe('loopScheduler', () => {
     let loaded = loadState();
     expect(loaded).toBeDefined();
     expect(loaded!.nextRun).toBeGreaterThanOrEqual(Date.now() + interval);
+    // After a successful run finishes, the loop goes back to "idle" (waiting
+    // for the next scheduled run) rather than staying marked as running.
+    expect(loaded!.currentPhase).toBe('idle');
 
     // Ensure clearState clears memory timers and prevents rescheduling
     clearState();
     loaded = loadState();
     expect(loaded).toBeUndefined();
+  });
+
+  it('should record a running heartbeat while a background run is in flight', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir, sessionId: 'test-session' },
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
+      fork: vi.fn().mockImplementation((params) => ({
+        ...rawMockConfig,
+        _params: { ...rawMockConfig._params, ...params },
+      })),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    const mockConfig = rawMockConfig as unknown as Config;
+
+    // A stream that yields one event and then blocks (never resolves the
+    // second `next()`), simulating a run that is genuinely still in
+    // progress - so we can inspect the on-disk heartbeat mid-flight.
+    let releaseStream: () => void = () => {};
+    const blocker = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    async function* mockSendStream() {
+      yield {
+        type: 'message',
+        streamId: 'mock-stream',
+        timestamp: new Date().toISOString(),
+        role: 'agent',
+        content: [{ type: 'text', text: 'Working...' }],
+      };
+      await blocker;
+    }
+
+    const sendStreamMock = vi.fn().mockReturnValue(mockSendStream());
+    vi.mocked(LegacyAgentSession).mockImplementation(
+      () =>
+        ({
+          sendStream: sendStreamMock,
+        }) as unknown as LegacyAgentSession,
+    );
+
+    const interval = 5000;
+    const state: LoopState = {
+      nextRun: Date.now() + interval,
+      mode: 'fixed-prompt',
+      prompt: 'Check for text.txt',
+      intervalMs: interval,
+    };
+
+    schedule(state, mockConfig);
+    // Before the timer fires, the loop is persisted as idle.
+    expect(loadState()!.currentPhase).toBe('idle');
+
+    vi.advanceTimersByTime(interval);
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+
+    // The run has started and yielded its first event, but is still
+    // in-flight (blocked on `blocker`): the on-disk heartbeat should reflect
+    // "running", with a fresh timestamp.
+    const midFlight = loadState();
+    expect(midFlight).toBeDefined();
+    expect(midFlight!.currentPhase).toBe('running');
+    expect(midFlight!.lastHeartbeatAt).toBeDefined();
+    expect(midFlight!.lastHeartbeatAt!).toBeLessThanOrEqual(Date.now());
+
+    // Let the run finish so the fake timer / pending promises do not leak
+    // into the next test.
+    releaseStream();
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
   });
 
   it('should treat a run without a completion signal as incomplete: no notification, retry backoff applied', async () => {

@@ -68,6 +68,17 @@ export const loopCommand: SlashCommand = {
         status = `Loop is scheduled to run next at ${new Date(
           state.nextRun,
         ).toLocaleString()}.\n  - Daemon Status: ${isRunning ? `Running (PID: ${state.pid})` : 'Stopped/Dead'}`;
+        // Surface the heartbeat so a stuck-but-alive run is visible instead
+        // of only a stale "next run" timestamp (see report_11.md §6/§9-3).
+        if (state.currentPhase === 'running') {
+          const secondsSinceHeartbeat = state.lastHeartbeatAt
+            ? Math.round((Date.now() - state.lastHeartbeatAt) / 1000)
+            : undefined;
+          status +=
+            secondsSinceHeartbeat !== undefined
+              ? `\n  - Currently executing a background run (last activity ${secondsSinceHeartbeat}s ago).`
+              : '\n  - Currently executing a background run.';
+        }
         if (state.retryCount) {
           status += `\n  - Consecutive Failures: ${state.retryCount}`;
         }
