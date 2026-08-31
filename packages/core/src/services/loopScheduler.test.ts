@@ -116,7 +116,12 @@ describe('loopScheduler', () => {
         streamId: 'mock-stream',
         timestamp: new Date().toISOString(),
         role: 'agent',
-        content: [{ type: 'text', text: 'System status is normal.' }],
+        content: [
+          {
+            type: 'text',
+            text: 'System status is normal.\n<<<LOOP_TASK_COMPLETE>>>',
+          },
+        ],
       },
     ];
 
@@ -156,11 +161,13 @@ describe('loopScheduler', () => {
       await Promise.resolve();
     }
 
-    expect(sendStreamMock).toHaveBeenCalledWith({
-      message: {
-        content: [{ type: 'text', text: 'Verify system' }],
-      },
-    });
+    // The prompt sent to the model is the original prompt plus the
+    // completion-gate instruction appended by schedule() (see task_09.md).
+    const sentMessage = sendStreamMock.mock.calls.at(-1)?.[0];
+    expect(sentMessage.message.content[0].text).toContain('Verify system');
+    expect(sentMessage.message.content[0].text).toContain(
+      '<<<LOOP_TASK_COMPLETE>>>',
+    );
 
     // Check that the background config was instantiated with approvalMode: 'yolo' to isolate UI
     const sessionCall = vi.mocked(LegacyAgentSession).mock.calls.at(-1);
@@ -189,6 +196,81 @@ describe('loopScheduler', () => {
     clearState();
     loaded = loadState();
     expect(loaded).toBeUndefined();
+  });
+
+  it('should treat a run without a completion signal as incomplete: no notification, retry backoff applied', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir, sessionId: 'test-session' },
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
+      fork: vi.fn().mockImplementation((params) => ({
+        ...rawMockConfig,
+        _params: { ...rawMockConfig._params, ...params },
+      })),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    const mockConfig = rawMockConfig as unknown as Config;
+
+    // Simulates the agent going on a tangent instead of confirming
+    // completion of the requested check (see task_09.md / report_11.md §3).
+    const events = [
+      {
+        type: 'message',
+        streamId: 'mock-stream',
+        timestamp: new Date().toISOString(),
+        role: 'agent',
+        content: [
+          { type: 'text', text: 'Let me look into something unrelated...' },
+        ],
+      },
+    ];
+
+    async function* mockSendStream() {
+      for (const event of events) {
+        yield event;
+      }
+    }
+
+    const sendStreamMock = vi.fn().mockReturnValue(mockSendStream());
+    vi.mocked(LegacyAgentSession).mockImplementation(
+      () =>
+        ({
+          sendStream: sendStreamMock,
+        }) as unknown as LegacyAgentSession,
+    );
+
+    const { sendNotification } = await import('../utils/notificationClient.js');
+    const sendNotificationMock = vi.mocked(sendNotification);
+
+    const interval = 5000;
+    const state: LoopState = {
+      nextRun: Date.now() + interval,
+      mode: 'fixed-prompt',
+      prompt: 'Check for text.txt',
+      intervalMs: interval,
+    };
+
+    schedule(state, mockConfig);
+    vi.advanceTimersByTime(interval);
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+
+    // No completion marker was present, so the partial/distracted output
+    // must not be surfaced to the user.
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+
+    // The run counts as a setback: retryCount increments and the next run
+    // is backed off further than the plain interval, exactly like a thrown
+    // error would be handled.
+    const loaded = loadState();
+    expect(loaded).toBeDefined();
+    expect(loaded!.retryCount).toBe(1);
+    expect(loaded!.lastError).toContain('completion signal');
+    expect(loaded!.nextRun).toBeGreaterThan(Date.now() + interval);
   });
 
   it('should clear timer on process exit signals but preserve state.json', () => {

@@ -33,6 +33,45 @@ const STATE_FILE = 'state.json';
 const MAX_RETRY_COUNT = 10;
 const MAX_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
 
+// A background loop run is meant to be a short, single-purpose check (e.g.
+// "does text.txt exist?"), not an open-ended interactive session. Without an
+// explicit cap, invoke_agent/subagent delegation and unbounded exploration
+// can turn a single run into a multi-minute (or longer) chain of tool calls
+// that never lets schedule() reschedule the next run. Subagent delegation
+// itself stays fully enabled (it is required for autonomous operation) -
+// only the number of turns a single background run may take is bounded.
+const BACKGROUND_MAX_SESSION_TURNS = 8;
+
+// A background run is only "done" if the agent explicitly confirms it
+// actually completed the requested check - not merely because it stopped
+// talking (e.g. it hit BACKGROUND_MAX_SESSION_TURNS mid-tangent, or gave up
+// silently). This mirrors zero's RequireCompletionSignal headless safeguard
+// (see report_11.md §3/§9-1): the model must positively assert completion,
+// rather than the scheduler assuming success by default. Subagent
+// delegation itself is not restricted by this - only whether a given run's
+// *result* counts as a verified success for scheduling/notification
+// purposes.
+const COMPLETION_MARKER = '<<<LOOP_TASK_COMPLETE>>>';
+
+function buildCompletionGateInstruction(): string {
+  return (
+    `\n\nIMPORTANT: This is an unattended background check. If, and only ` +
+    `if, you have actually completed the task above and are confident in ` +
+    `the result, end your final response with a line containing exactly: ` +
+    `${COMPLETION_MARKER}\n` +
+    `If you could not complete the task, got stuck, ran out of turns, or ` +
+    `are uncertain, do NOT include that marker.`
+  );
+}
+
+function hasCompletionSignal(text: string): boolean {
+  return text.includes(COMPLETION_MARKER);
+}
+
+function stripCompletionMarker(text: string): string {
+  return text.split(COMPLETION_MARKER).join('').trim();
+}
+
 function getStatePath(): string {
   return path.join(Storage.getProjectLoopStateDir(), STATE_FILE);
 }
@@ -47,6 +86,67 @@ import { coreEvents, CoreEvent } from '../utils/events.js';
 import { sendNotification } from '../utils/notificationClient.js';
 
 let timeoutId: NodeJS.Timeout | undefined;
+
+// Shared retry/backoff/give-up logic for anything that keeps a background
+// run from counting as a verified success: thrown errors *and* runs that
+// ended without a completion signal (see COMPLETION_MARKER above). Kept as
+// one function so both code paths stay consistent with
+// design_loop_autonomous_v2.md §4.4's backoff/give-up policy.
+function rescheduleAfterSetback(
+  state: LoopState,
+  config: Config,
+  errorMessage: string,
+  options: { emitImmediateFeedback?: boolean } = {},
+): void {
+  if (options.emitImmediateFeedback) {
+    coreEvents.emit(CoreEvent.UserFeedback, {
+      severity: 'error',
+      message: `Error in loop execution: ${errorMessage}`,
+    });
+  }
+
+  // Do not reschedule if the loop was stopped/cleared while this run was in
+  // flight.
+  if (!fs.existsSync(getStatePath())) {
+    return;
+  }
+
+  const retryCount = (state.retryCount ?? 0) + 1;
+
+  if (retryCount > MAX_RETRY_COUNT) {
+    fs.appendFileSync(
+      getLogPath(),
+      `[${Date.now()}] BG Loop: Giving up after ${retryCount - 1} consecutive failures/incomplete runs. Stopping loop. Run "/loop <interval> <prompt> --background" to restart once the issue is resolved.\n`,
+    );
+    coreEvents.emit(CoreEvent.UserFeedback, {
+      severity: 'error',
+      message: `Loop stopped automatically after ${
+        retryCount - 1
+      } consecutive failures/incomplete runs. Last issue: ${errorMessage}`,
+    });
+    clearState();
+    return;
+  }
+
+  // Exponential backoff with a ceiling so a flaky/distracted loop retries
+  // with increasing patience instead of hammering the API or spinning
+  // forever with no delay at all.
+  const backoffMs = Math.min(
+    (state.intervalMs ?? 0) * 2 ** retryCount,
+    MAX_BACKOFF_MS,
+  );
+  const newState: LoopState = {
+    ...state,
+    nextRun: Date.now() + backoffMs,
+    retryCount,
+    lastError: errorMessage,
+  };
+  fs.appendFileSync(
+    getLogPath(),
+    `[${Date.now()}] BG Loop: Rescheduling after setback #${retryCount} in ${backoffMs}ms.\n`,
+  );
+  schedule(newState, config);
+}
 
 export function schedule(state: LoopState, config: Config): void {
   saveState(state);
@@ -66,6 +166,7 @@ export function schedule(state: LoopState, config: Config): void {
     const backgroundConfig = config.fork({
       approvalMode: ApprovalMode.YOLO, // Force auto-approval for silent background check
       sessionId: `background-loop-${Date.now()}`,
+      maxSessionTurns: BACKGROUND_MAX_SESSION_TURNS,
     });
 
     let accumulatedText = '';
@@ -82,7 +183,12 @@ export function schedule(state: LoopState, config: Config): void {
       });
       const stream = session.sendStream({
         message: {
-          content: [{ type: 'text', text: state.prompt }],
+          content: [
+            {
+              type: 'text',
+              text: state.prompt + buildCompletionGateInstruction(),
+            },
+          ],
         },
       });
 
@@ -109,90 +215,70 @@ export function schedule(state: LoopState, config: Config): void {
         `[${Date.now()}] BG Loop: Stream finished. Result: ${accumulatedText}\n`,
       );
 
-      if (accumulatedText.trim()) {
-        try {
-          const notification = {
-            type: 'loop_result',
-            content: accumulatedText.trim(),
-          };
-          await sendNotification(JSON.stringify(notification));
-        } catch (err) {
-          fs.appendFileSync(
-            getLogPath(),
-            `[${Date.now()}] BG Loop: Failed to send notification: ${
-              err instanceof Error ? err.message : String(err)
-            }\n`,
-          );
-        }
+      // Check if the state file still exists before rescheduling (e.g. self-stopping called clearState)
+      if (!fs.existsSync(getStatePath())) {
+        return;
       }
 
-      // Check if the state file still exists before rescheduling (e.g. self-stopping called clearState)
-      if (fs.existsSync(getStatePath())) {
+      if (hasCompletionSignal(accumulatedText)) {
+        const finalText = stripCompletionMarker(accumulatedText);
+        if (finalText) {
+          try {
+            const notification = {
+              type: 'loop_result',
+              content: finalText,
+            };
+            await sendNotification(JSON.stringify(notification));
+          } catch (err) {
+            fs.appendFileSync(
+              getLogPath(),
+              `[${Date.now()}] BG Loop: Failed to send notification: ${
+                err instanceof Error ? err.message : String(err)
+              }\n`,
+            );
+          }
+        }
+
         const newState: LoopState = {
           ...state,
           nextRun: Date.now() + (state.intervalMs ?? 0),
-          // Reset failure tracking after a successful run.
+          // Reset failure tracking after a verified-complete run.
           retryCount: 0,
           lastError: undefined,
         };
         fs.appendFileSync(
           getLogPath(),
-          `[${Date.now()}] BG Loop: Rescheduling next run.\n`,
+          `[${Date.now()}] BG Loop: Completion signal detected. Rescheduling next run.\n`,
         );
         schedule(newState, config);
+        return;
       }
+
+      // The run ended (turn cap reached, or the model simply stopped)
+      // without ever confirming it completed the requested task - e.g. it
+      // went on a tangent instead of checking what it was asked to check
+      // (see report_11.md §3/§9-1). Do not surface this partial/uncertain
+      // output to the user, and do not treat it as a normal success: back
+      // off like a failure so a persistently distracted loop does not spam
+      // notifications or spin at full speed forever.
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] BG Loop: No completion signal detected - treating run as incomplete.\n`,
+      );
+      rescheduleAfterSetback(
+        state,
+        config,
+        'Run ended without a completion signal (possible distraction or turn-cap cutoff).',
+      );
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       fs.appendFileSync(
         getLogPath(),
         `[${Date.now()}] BG Loop: CATCH BLOCK ERROR: ${errorMessage}\n`,
       );
-      coreEvents.emit(CoreEvent.UserFeedback, {
-        severity: 'error',
-        message: `Error in loop execution: ${errorMessage}`,
+      rescheduleAfterSetback(state, config, errorMessage, {
+        emitImmediateFeedback: true,
       });
-
-      // Do not reschedule if the loop was stopped/cleared while this run
-      // was in flight.
-      if (!fs.existsSync(getStatePath())) {
-        return;
-      }
-
-      const retryCount = (state.retryCount ?? 0) + 1;
-
-      if (retryCount > MAX_RETRY_COUNT) {
-        fs.appendFileSync(
-          getLogPath(),
-          `[${Date.now()}] BG Loop: Giving up after ${retryCount - 1} consecutive failures. Stopping loop. Run "/loop <interval> <prompt> --background" to restart once the issue is resolved.\n`,
-        );
-        coreEvents.emit(CoreEvent.UserFeedback, {
-          severity: 'error',
-          message: `Loop stopped automatically after ${
-            retryCount - 1
-          } consecutive failures. Last error: ${errorMessage}`,
-        });
-        clearState();
-        return;
-      }
-
-      // Exponential backoff with a ceiling so a flaky loop retries with
-      // increasing patience instead of hammering the API or spinning
-      // forever with no delay at all.
-      const backoffMs = Math.min(
-        (state.intervalMs ?? 0) * 2 ** retryCount,
-        MAX_BACKOFF_MS,
-      );
-      const newState: LoopState = {
-        ...state,
-        nextRun: Date.now() + backoffMs,
-        retryCount,
-        lastError: errorMessage,
-      };
-      fs.appendFileSync(
-        getLogPath(),
-        `[${Date.now()}] BG Loop: Rescheduling after failure #${retryCount} in ${backoffMs}ms.\n`,
-      );
-      schedule(newState, config);
     }
   }, delay);
 }
@@ -388,10 +474,27 @@ export function isDaemonRunning(): boolean {
   }
 }
 
+// This process is the actual detached daemon spawned by startDaemon() (see
+// gemini.tsx's matching `process.argv.includes('loop') && ...('daemon')`
+// check that drives auto-start there). Only the daemon process should force
+// its own exit below; the interactive CLI process also loads this module and
+// must keep handling SIGINT/SIGTERM through its own shutdown path.
+const isLoopDaemonProcess =
+  process.argv.includes('loop') && process.argv.includes('daemon');
+
+function handleTerminationSignal(): void {
+  clearTimer();
+  // Registering a SIGINT/SIGTERM listener suppresses Node's default
+  // "terminate immediately" behavior for that signal. If a background run is
+  // in-flight (e.g. awaiting a long subagent call), the event loop stays
+  // alive and the daemon process would otherwise ignore `/loop stop`
+  // indefinitely. Force the daemon to exit so stopDaemon()'s SIGTERM is
+  // actually honored.
+  if (isLoopDaemonProcess) {
+    process.exit(0);
+  }
+}
+
 // Ensure active timers (not disk state) are cleared on process termination
-process.on('SIGINT', () => {
-  clearTimer();
-});
-process.on('SIGTERM', () => {
-  clearTimer();
-});
+process.on('SIGINT', handleTerminationSignal);
+process.on('SIGTERM', handleTerminationSignal);
