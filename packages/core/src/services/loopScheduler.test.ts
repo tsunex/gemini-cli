@@ -190,6 +190,14 @@ describe('loopScheduler', () => {
     expect(sentMessage.message.content[0].text).toContain(
       '<<<LOOP_TASK_COMPLETE>>>',
     );
+    // The completion-gate instruction must also discourage delegating
+    // simple/single-step actions to invoke_agent/a subagent, since doing so
+    // blocks the run with no visible progress for minutes and repeatedly
+    // caused turn-cap failures in real-world testing (see task_17.md).
+    expect(sentMessage.message.content[0].text).toContain('invoke_agent');
+    expect(sentMessage.message.content[0].text.toLowerCase()).toContain(
+      'do not delegate',
+    );
 
     // Check that the background config was instantiated with approvalMode: 'yolo' to isolate UI
     const sessionCall = vi.mocked(LegacyAgentSession).mock.calls.at(-1);
@@ -293,6 +301,76 @@ describe('loopScheduler', () => {
 
     // Let the run finish so the fake timer / pending promises do not leak
     // into the next test.
+    releaseStream();
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+  });
+
+  it('should surface subagent delegation via currentAction when an invoke_agent tool_request event is seen', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir, sessionId: 'test-session' },
+      initialize: vi.fn().mockResolvedValue(undefined),
+      getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
+      fork: vi.fn().mockImplementation((params) => ({
+        ...rawMockConfig,
+        _params: { ...rawMockConfig._params, ...params },
+      })),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    };
+    const mockConfig = rawMockConfig as unknown as Config;
+
+    // A stream that reports delegating to the `generalist` subagent and
+    // then blocks (simulating the subagent's own long, opaque execution),
+    // so we can inspect the on-disk currentAction mid-flight (see
+    // task_18.md).
+    let releaseStream: () => void = () => {};
+    const blocker = new Promise<void>((resolve) => {
+      releaseStream = resolve;
+    });
+    async function* mockSendStream() {
+      yield {
+        type: 'tool_request',
+        streamId: 'mock-stream',
+        timestamp: new Date().toISOString(),
+        name: 'invoke_agent',
+        args: { agent_name: 'generalist' },
+      };
+      await blocker;
+    }
+
+    const sendStreamMock = vi.fn().mockReturnValue(mockSendStream());
+    vi.mocked(LegacyAgentSession).mockImplementation(
+      () =>
+        ({
+          sendStream: sendStreamMock,
+        }) as unknown as LegacyAgentSession,
+    );
+
+    const interval = 5000;
+    const state: LoopState = {
+      nextRun: Date.now() + interval,
+      mode: 'fixed-prompt',
+      prompt: 'Check for text.txt',
+      intervalMs: interval,
+    };
+
+    schedule(state, mockConfig);
+    vi.advanceTimersByTime(interval);
+    for (let i = 0; i < 20; i++) {
+      vi.runAllTicks();
+      await Promise.resolve();
+    }
+
+    const midFlight = loadState();
+    expect(midFlight).toBeDefined();
+    expect(midFlight!.currentPhase).toBe('running');
+    expect(midFlight!.currentAction).toContain('generalist');
+    expect(midFlight!.currentAction).toContain('Delegating');
+
     releaseStream();
     for (let i = 0; i < 20; i++) {
       vi.runAllTicks();

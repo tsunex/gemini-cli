@@ -19,6 +19,7 @@ import {
   stopLoopDaemon,
   isLoopDaemonRunning,
   LoopAlreadyRunningError,
+  BACKGROUND_RUN_TIMEOUT_MS,
   type LoopState,
 } from '@google/gemini-cli-core';
 
@@ -70,14 +71,37 @@ export const loopCommand: SlashCommand = {
         ).toLocaleString()}.\n  - Daemon Status: ${isRunning ? `Running (PID: ${state.pid})` : 'Stopped/Dead'}`;
         // Surface the heartbeat so a stuck-but-alive run is visible instead
         // of only a stale "next run" timestamp (see report_11.md §6/§9-3).
+        // Rather than guessing "stuck" from an arbitrary elapsed-time
+        // threshold (which cannot generalize across prompts - a complex
+        // investigation may legitimately take much longer than a simple
+        // file check), report the objective countdown to the same
+        // BACKGROUND_RUN_TIMEOUT_MS the watchdog itself uses (task_15.md),
+        // so the user can judge for themselves whether a run is merely
+        // slow or is approaching automatic recovery.
         if (state.currentPhase === 'running') {
           const secondsSinceHeartbeat = state.lastHeartbeatAt
             ? Math.round((Date.now() - state.lastHeartbeatAt) / 1000)
             : undefined;
-          status +=
-            secondsSinceHeartbeat !== undefined
-              ? `\n  - Currently executing a background run (last activity ${secondsSinceHeartbeat}s ago).`
-              : '\n  - Currently executing a background run.';
+          if (secondsSinceHeartbeat !== undefined) {
+            const secondsUntilWatchdog = Math.max(
+              0,
+              Math.round(
+                (BACKGROUND_RUN_TIMEOUT_MS -
+                  (Date.now() - state.lastHeartbeatAt!)) /
+                  1000,
+              ),
+            );
+            status += `\n  - Currently executing a background run (last activity ${secondsSinceHeartbeat}s ago; will auto-recover in ${secondsUntilWatchdog}s if it stays silent).`;
+          } else {
+            status += '\n  - Currently executing a background run.';
+          }
+          // Surface subagent delegation explicitly, since it blocks the
+          // run with no further stream events for as long as the
+          // subagent takes (see task_18.md) - without this, a delegated
+          // run looks identical to an unexplained silence.
+          if (state.currentAction) {
+            status += `\n  - ${state.currentAction}`;
+          }
         }
         if (state.retryCount) {
           status += `\n  - Consecutive Failures: ${state.retryCount}`;

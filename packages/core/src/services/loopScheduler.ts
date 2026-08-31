@@ -38,6 +38,16 @@ export interface LoopState {
    * stale `nextRun` with no further signal.
    */
   lastHeartbeatAt?: number;
+  /**
+   * Short human-readable note about what the current run is doing right
+   * now, e.g. "Delegating to subagent 'generalist'". Subagent delegation
+   * (invoke_agent) blocks the run with no further stream events until the
+   * subagent finishes (which can legitimately take several minutes), so
+   * without this note a delegated run is indistinguishable from a truly
+   * stuck one in `/loop status` (see task_18.md). Cleared once the run
+   * finishes or the next run starts.
+   */
+  currentAction?: string;
 }
 
 const STATE_FILE = 'state.json';
@@ -84,10 +94,21 @@ const COMPLETION_MARKER = '<<<LOOP_TASK_COMPLETE>>>';
 
 function buildCompletionGateInstruction(): string {
   return (
-    `\n\nIMPORTANT: This is an unattended background check. If, and only ` +
-    `if, you have actually completed the task above and are confident in ` +
-    `the result, end your final response with a line containing exactly: ` +
-    `${COMPLETION_MARKER}\n` +
+    `\n\nIMPORTANT: This is an unattended background check running in ` +
+    `full auto-approval (YOLO) mode - you already have direct access to ` +
+    `all tools (file read/write/edit, shell commands, search, etc.) ` +
+    `without needing approval or a subagent. For simple, single-step, or ` +
+    `low-turn-count actions (e.g. checking whether a file exists, ` +
+    `deleting/creating one file, running one shell command), use the ` +
+    `relevant tool directly yourself - do NOT delegate the task to ` +
+    `invoke_agent/a subagent. Subagent delegation blocks this run with no ` +
+    `visible progress for as long as the subagent takes (which can be ` +
+    `several minutes) and consumes this run's limited turn budget for a ` +
+    `single call, so reserve it only for genuinely large, multi-file, or ` +
+    `high-turn-volume work.\n\n` +
+    `If, and only if, you have actually completed the task above and are ` +
+    `confident in the result, end your final response with a line ` +
+    `containing exactly: ${COMPLETION_MARKER}\n` +
     `If you could not complete the task, got stuck, ran out of turns, or ` +
     `are uncertain, do NOT include that marker.`
   );
@@ -255,12 +276,29 @@ export function schedule(state: LoopState, config: Config): void {
         armWatchdog();
         for await (const event of stream) {
           armWatchdog();
+          // Detect subagent delegation (invoke_agent) so /loop status and
+          // loop.log can distinguish "waiting on a subagent - can
+          // legitimately take several minutes with no further events" from
+          // an unexplained silence, instead of both looking identical (see
+          // task_18.md / report_11.md real-world follow-up).
+          let currentAction: string | undefined;
+          if (event.type === 'tool_request' && event.name === 'invoke_agent') {
+            const agentName =
+              typeof event.args?.['agent_name'] === 'string'
+                ? event.args['agent_name']
+                : 'unknown';
+            currentAction = `Delegating to subagent '${agentName}' (may take several minutes with no further activity)`;
+            fs.appendFileSync(
+              getLogPath(),
+              `[${Date.now()}] BG Loop: ${currentAction}\n`,
+            );
+          }
           // Update the on-disk heartbeat on every event so a monitoring user
           // (via `/loop status`) can distinguish "actively working" from
           // "hung/stuck" during a long-running background turn, instead of
           // only seeing a stale nextRun with no further signal (see
           // report_11.md §6/§9-3).
-          recordHeartbeat('running');
+          recordHeartbeat('running', currentAction);
           fs.appendFileSync(
             getLogPath(),
             `[${Date.now()}] BG Loop: Event received: ${JSON.stringify(event)}\n`,
@@ -421,6 +459,14 @@ function isLoopState(obj: unknown): obj is LoopState {
     return false;
   }
 
+  if (
+    'currentAction' in obj &&
+    typeof obj.currentAction !== 'string' &&
+    typeof obj.currentAction !== 'undefined'
+  ) {
+    return false;
+  }
+
   return true;
 }
 
@@ -478,7 +524,10 @@ export function saveState(state: LoopState): void {
  * removed) since this run started, so a stopped loop's state file is never
  * accidentally resurrected by a stale in-flight run.
  */
-function recordHeartbeat(phase: 'idle' | 'running'): void {
+function recordHeartbeat(
+  phase: 'idle' | 'running',
+  currentAction?: string,
+): void {
   const statePath = getStatePath();
   if (!fs.existsSync(statePath)) {
     return;
@@ -491,6 +540,11 @@ function recordHeartbeat(phase: 'idle' | 'running'): void {
     ...current,
     currentPhase: phase,
     lastHeartbeatAt: Date.now(),
+    // Explicitly clear currentAction when the caller does not pass one
+    // (e.g. a normal stream event after a subagent delegation finished),
+    // so a stale "Delegating to..." note does not linger past the point
+    // where it stopped being true.
+    currentAction,
   });
 }
 

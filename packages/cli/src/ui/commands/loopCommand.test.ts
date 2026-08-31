@@ -27,6 +27,7 @@ vi.mock('@google/gemini-cli-core', () => {
     stopLoopDaemon: vi.fn(),
     isLoopDaemonRunning: vi.fn(),
     LoopAlreadyRunningError: MockLoopAlreadyRunningError,
+    BACKGROUND_RUN_TIMEOUT_MS: 5 * 60 * 1000,
   };
 });
 
@@ -104,6 +105,34 @@ describe('loopCommand', () => {
         expect(result.content).toContain('Loop is scheduled to run next at');
         expect(result.content).toContain('Running (PID: 1234)');
       }
+    }
+  });
+
+  it('should show an objective countdown to the watchdog auto-recovery while a run is in flight', async () => {
+    const heartbeatAgeMs = 68_000;
+    vi.mocked(core.loadLoopState).mockReturnValue({
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'Check for text.txt',
+      intervalMs: 5000,
+      pid: 1234,
+      currentPhase: 'running',
+      lastHeartbeatAt: Date.now() - heartbeatAgeMs,
+    });
+    vi.mocked(core.isLoopDaemonRunning).mockReturnValue(true);
+
+    const result = await action(mockContext, 'status');
+
+    expect(result).toBeDefined();
+    if (result && 'type' in result && result.type === 'message') {
+      // Reports elapsed time since the last observed activity...
+      expect(result.content).toContain('last activity 68s ago');
+      // ...and the objective remaining time until the watchdog
+      // (BACKGROUND_RUN_TIMEOUT_MS, mocked to 5 minutes above) would abort
+      // a still-silent run - not a made-up "stuck" verdict, since a
+      // fixed elapsed-time threshold cannot generalize across prompts of
+      // varying legitimate complexity (see task_16.md).
+      expect(result.content).toContain('will auto-recover in 232s');
     }
   });
 
