@@ -116,6 +116,7 @@ describe('loopScheduler', () => {
       _params: {
         targetDir: tempDir,
         sessionId: 'test-session',
+        mainAgentTools: ['glob'],
       },
       initialize: vi.fn().mockResolvedValue(undefined),
       getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
@@ -204,7 +205,10 @@ describe('loopScheduler', () => {
     expect(sessionCall).toBeDefined();
     const passedConfig = sessionCall![0].config;
     expect(passedConfig._params).toEqual(
-      expect.objectContaining({ approvalMode: 'yolo' }),
+      expect.objectContaining({
+        approvalMode: 'yolo',
+        mainAgentTools: undefined,
+      }),
     );
 
     // The daemon process cannot rely on in-process events reaching the UI

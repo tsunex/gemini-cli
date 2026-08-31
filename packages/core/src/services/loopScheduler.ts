@@ -221,6 +221,12 @@ export function schedule(state: LoopState, config: Config): void {
       approvalMode: ApprovalMode.YOLO, // Force auto-approval for silent background check
       sessionId: `background-loop-${Date.now()}`,
       maxSessionTurns: BACKGROUND_MAX_SESSION_TURNS,
+      // Background loops are explicitly scheduled as YOLO-mode maintenance
+      // agents. Do not inherit a transient main-agent tool subset from the
+      // interactive session, otherwise simple autonomous actions such as
+      // deleting one file or calling loop-stop may be invisible to the
+      // background model even though those tools are registered.
+      mainAgentTools: undefined,
     });
 
     let accumulatedText = '';
