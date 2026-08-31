@@ -2192,8 +2192,8 @@ Logging in with Google... Restarting Gemini CLI to continue.
 
       historyManager.addItem(
         {
-          type: MessageType.INFO,
-          text: `[Loop Background Response]\n${event.content}`,
+          type: MessageType.GEMINI,
+          text: event.content,
         },
         Date.now(),
       );
