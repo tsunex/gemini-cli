@@ -57,4 +57,39 @@ describe('loop-parser', () => {
     expect(parseLoopArgs('-i 15m').intervalMs).toBe(15 * 60 * 1000);
     expect(parseLoopArgs('-i 2h').intervalMs).toBe(2 * 60 * 60 * 1000);
   });
+
+  it('should parse detach flag when background is present', () => {
+    const parsed = parseLoopArgs(
+      '--interval 10s --background --detach Monitor logs',
+    );
+    expect(parsed).toEqual({
+      mode: 'fixed-prompt',
+      interval: '10s',
+      intervalMs: 10 * 1000,
+      prompt: 'Monitor logs',
+      background: true,
+      detach: true,
+    });
+  });
+
+  it('should parse detach flag with -b and -d shorthand', () => {
+    const parsed = parseLoopArgs('-i 10s -b -d Monitor');
+    expect(parsed).toEqual({
+      mode: 'fixed-prompt',
+      interval: '10s',
+      intervalMs: 10 * 1000,
+      prompt: 'Monitor',
+      background: true,
+      detach: true,
+    });
+  });
+
+  it('should reject detach flag when background is absent', () => {
+    expect(() => parseLoopArgs('--detach Monitor logs')).toThrow(
+      '--detach can only be used with --background',
+    );
+    expect(() => parseLoopArgs('-d -i 5m')).toThrow(
+      '--detach can only be used with --background',
+    );
+  });
 });

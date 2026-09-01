@@ -66,9 +66,26 @@ export const loopCommand: SlashCommand = {
       let status: string;
       if (state) {
         const isRunning = isLoopDaemonRunning();
+        const isDetached =
+          state.detached !== undefined
+            ? state.detached
+            : state.ownerPid === undefined;
+        const lifecycleType = isDetached ? 'detached' : 'session-owned';
+
         status = `Loop is scheduled to run next at ${new Date(
           state.nextRun,
-        ).toLocaleString()}.\n  - Daemon Status: ${isRunning ? `Running (PID: ${state.pid})` : 'Stopped/Dead'}`;
+        ).toLocaleString()}.\n  - Daemon Status: ${isRunning ? `Running (PID: ${state.pid})` : 'Stopped/Dead'}\n  - Lifecycle: ${lifecycleType}`;
+
+        if (state.ownerPid !== undefined) {
+          status += `\n  - Owner PID: ${state.ownerPid}`;
+        }
+        if (state.ownerSessionId) {
+          status += `\n  - Owner Session ID: ${state.ownerSessionId}`;
+        }
+        if (state.ownerWorkspace) {
+          status += `\n  - Owner Workspace: ${state.ownerWorkspace}`;
+        }
+
         // Surface the heartbeat so a stuck-but-alive run is visible instead
         // of only a stale "next run" timestamp (see report_11.md §6/§9-3).
         // Rather than guessing "stuck" from an arbitrary elapsed-time
@@ -109,6 +126,48 @@ export const loopCommand: SlashCommand = {
         if (state.lastError) {
           status += `\n  - Last Error: ${state.lastError}`;
         }
+
+        // Mismatch warnings
+        const warnings: string[] = [];
+
+        // Check if owner process is alive for session-owned loops
+        if (isRunning && !isDetached && state.ownerPid !== undefined) {
+          let isOwnerAlive = false;
+          try {
+            process.kill(state.ownerPid, 0);
+            isOwnerAlive = true;
+          } catch {
+            isOwnerAlive = false;
+          }
+          if (!isOwnerAlive) {
+            warnings.push(
+              `WARNING: The owning interactive process (PID: ${state.ownerPid}) is no longer alive, but this session-owned loop daemon is still running.`,
+            );
+          }
+        }
+
+        // Check workspace mismatch
+        if (state.ownerWorkspace && state.ownerWorkspace !== process.cwd()) {
+          warnings.push(
+            `WARNING: Current workspace (${process.cwd()}) does not match the loop's owner workspace (${state.ownerWorkspace}).`,
+          );
+        }
+
+        // Check session mismatch
+        const configObj = context.services.agentContext?.config;
+        if (
+          configObj &&
+          state.ownerSessionId &&
+          state.ownerSessionId !== configObj.getSessionId()
+        ) {
+          warnings.push(
+            `WARNING: Current session ID (${configObj.getSessionId()}) does not match the loop's owner session ID (${state.ownerSessionId}).`,
+          );
+        }
+
+        if (warnings.length > 0) {
+          status += `\n\n${warnings.join('\n')}`;
+        }
       } else {
         status = 'No loop is currently scheduled.';
       }
@@ -141,6 +200,10 @@ export const loopCommand: SlashCommand = {
         mode: parsed.mode,
         prompt: effectivePrompt,
         intervalMs,
+        detached: parsed.detach ?? false,
+        ownerPid: process.pid,
+        ownerSessionId: config.getSessionId(),
+        ownerWorkspace: process.cwd(),
       };
 
       try {
@@ -160,10 +223,16 @@ export const loopCommand: SlashCommand = {
       const clampWarning = wasClamped
         ? `\n  - WARNING: Requested interval (${requestedIntervalMs}ms) was too short and has been raised to the minimum of ${MIN_INTERVAL_MS}ms to avoid excessive API usage / rate-limit exhaustion.`
         : '';
+
+      const lifecycleType = state.detached ? 'detached' : 'session-owned';
+      const lifecycleDescription = state.detached
+        ? 'It is detached and will continue running after this interactive session exits.'
+        : 'It is session-owned and will automatically stop when this interactive session exits.';
+
       return {
         type: 'message',
         messageType: 'info',
-        content: `Background loop has been scheduled successfully as detached daemon.\n  - Mode: ${state.mode}\n  - Interval: ${intervalMs}ms (${intervalMs / 1000} seconds)\n  - Next run: ${nextRunDate.toLocaleString()}\n  - Prompt: "${effectivePrompt}"\n  - WARNING: Background loop runs with all tool calls auto-approved (YOLO mode). Use "/loop stop" to cancel it at any time.${clampWarning}`,
+        content: `Background loop has been scheduled successfully as a ${lifecycleType} daemon.\n  - Mode: ${state.mode}\n  - Lifecycle: ${lifecycleDescription}\n  - Interval: ${intervalMs}ms (${intervalMs / 1000} seconds)\n  - Next run: ${nextRunDate.toLocaleString()}\n  - Prompt: "${effectivePrompt}"\n  - WARNING: Background loop runs with all tool calls auto-approved (YOLO mode). Use "/loop stop" to cancel it at any time.${clampWarning}`,
       };
     }
 

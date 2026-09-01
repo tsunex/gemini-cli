@@ -21,6 +21,7 @@ import {
   stopLoopFromCurrentProcess,
   isDaemonRunning,
   normalizeStaleState,
+  stopSessionOwnedLoop,
   TERMINATION_GRACE_MS,
   BACKGROUND_RUN_TIMEOUT_MS,
   LoopAlreadyRunningError,
@@ -1343,6 +1344,85 @@ describe('loopScheduler', () => {
 
       expect(normalized).toBeUndefined();
       expect(loadState()).toBeUndefined();
+    });
+  });
+
+  describe('stopSessionOwnedLoop', () => {
+    it('should stop session-owned background loop if ownerPid matches process.pid and detached is false', () => {
+      const pid = 424242;
+      const killSpy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((_p, signal) => {
+          if (signal === 0) return true;
+          return true;
+        });
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        pid,
+        ownerPid: process.pid,
+        detached: false,
+      };
+      saveState(state);
+
+      stopSessionOwnedLoop();
+
+      // SIGTERM should be sent
+      expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
+    });
+
+    it('should NOT stop session-owned background loop if detached is true', () => {
+      const pid = 424242;
+      const killSpy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((_p, signal) => {
+          if (signal === 0) return true;
+          return true;
+        });
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        pid,
+        ownerPid: process.pid,
+        detached: true,
+      };
+      saveState(state);
+
+      stopSessionOwnedLoop();
+
+      // SIGTERM should NOT be sent
+      expect(killSpy).not.toHaveBeenCalledWith(-pid, 'SIGTERM');
+      expect(killSpy).not.toHaveBeenCalledWith(pid, 'SIGTERM');
+    });
+
+    it('should NOT stop loop if ownerPid does not match process.pid', () => {
+      const pid = 424242;
+      const killSpy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((_p, signal) => {
+          if (signal === 0) return true;
+          return true;
+        });
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        pid,
+        ownerPid: process.pid + 1, // Different owner PID
+        detached: false,
+      };
+      saveState(state);
+
+      stopSessionOwnedLoop();
+
+      // SIGTERM should NOT be sent
+      expect(killSpy).not.toHaveBeenCalledWith(-pid, 'SIGTERM');
+      expect(killSpy).not.toHaveBeenCalledWith(pid, 'SIGTERM');
     });
   });
 });

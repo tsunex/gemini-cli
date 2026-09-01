@@ -330,6 +330,7 @@ export {
   clearState as clearLoopState,
   startDaemon as startLoopDaemon,
   stopDaemon as stopLoopDaemon,
+  stopSessionOwnedLoop,
   isDaemonRunning as isLoopDaemonRunning,
   clearTimer as clearLoopTimer,
   normalizeStaleState as normalizeStaleLoopState,

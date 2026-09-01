@@ -38,6 +38,7 @@ import {
   getProjectHash,
   loadConversationRecord,
   type MessageRecord,
+  stopSessionOwnedLoop,
 } from '@google/gemini-cli-core';
 
 import { loadCliConfig, parseArguments } from './config/config.js';
@@ -369,6 +370,15 @@ export async function main() {
   setupUnhandledRejectionHandler();
 
   setupSignalHandlers();
+
+  // Register session-owned background loop cleanup on interactive session exit.
+  registerCleanup(() => {
+    try {
+      stopSessionOwnedLoop();
+    } catch {
+      // Ignore cleanup errors during shutdown
+    }
+  });
 
   const slashCommandConflictHandler = new SlashCommandConflictHandler();
   slashCommandConflictHandler.start();

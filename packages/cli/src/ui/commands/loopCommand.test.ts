@@ -40,14 +40,16 @@ describe('loopCommand', () => {
   }
 
   beforeEach(() => {
+    vi.restoreAllMocks();
     mockContext = {
       services: {
         agentContext: {
-          config: {},
+          config: {
+            getSessionId: vi.fn().mockReturnValue('mock-session-id'),
+          },
         },
       },
     } as unknown as CommandContext;
-    vi.restoreAllMocks();
   });
 
   it('should have the correct command properties', () => {
@@ -143,6 +145,7 @@ describe('loopCommand', () => {
       intervalMs: 10000,
       prompt: 'Check server health',
       background: true,
+      detach: false,
     });
 
     const result = await action(
@@ -155,6 +158,10 @@ describe('loopCommand', () => {
         mode: 'fixed-prompt',
         prompt: 'Check server health',
         intervalMs: 10000,
+        detached: false,
+        ownerPid: process.pid,
+        ownerSessionId: 'mock-session-id',
+        ownerWorkspace: process.cwd(),
       }),
       expect.any(Object),
     );
@@ -165,9 +172,45 @@ describe('loopCommand', () => {
       if (result.type === 'message') {
         expect(result.messageType).toBe('info');
         expect(result.content).toContain(
-          'Background loop has been scheduled successfully as detached daemon.',
+          'Background loop has been scheduled successfully as a session-owned daemon.',
         );
       }
+    }
+  });
+
+  it('should schedule detached background loop when background and detach flags are present', async () => {
+    vi.mocked(core.parseLoopArgs).mockReturnValue({
+      mode: 'fixed-prompt',
+      interval: '10s',
+      intervalMs: 10000,
+      prompt: 'Check server health',
+      background: true,
+      detach: true,
+    });
+
+    const result = await action(
+      mockContext,
+      '-i 10s --background --detach Check server health',
+    );
+
+    expect(core.startLoopDaemon).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mode: 'fixed-prompt',
+        prompt: 'Check server health',
+        intervalMs: 10000,
+        detached: true,
+        ownerPid: process.pid,
+        ownerSessionId: 'mock-session-id',
+        ownerWorkspace: process.cwd(),
+      }),
+      expect.any(Object),
+    );
+
+    expect(result).toBeDefined();
+    if (result && 'type' in result && result.type === 'message') {
+      expect(result.content).toContain(
+        'Background loop has been scheduled successfully as a detached daemon.',
+      );
     }
   });
 
@@ -292,6 +335,57 @@ describe('loopCommand', () => {
     if (result && 'type' in result && result.type === 'message') {
       expect(result.content).toContain('Consecutive Failures: 3');
       expect(result.content).toContain('Last Error: ECONNRESET');
+    }
+  });
+
+  it('should report session-owned lifecycle and ownership metadata in status', async () => {
+    vi.mocked(core.loadLoopState).mockReturnValue({
+      nextRun: 1774900000000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid: 1234,
+      detached: false,
+      ownerPid: process.pid,
+      ownerSessionId: 'mock-session-id',
+      ownerWorkspace: process.cwd(),
+    });
+    vi.mocked(core.isLoopDaemonRunning).mockReturnValue(true);
+
+    const result = await action(mockContext, 'status');
+
+    expect(result).toBeDefined();
+    if (result && 'type' in result && result.type === 'message') {
+      expect(result.content).toContain('Lifecycle: session-owned');
+      expect(result.content).toContain(`Owner PID: ${process.pid}`);
+      expect(result.content).toContain('Owner Session ID: mock-session-id');
+      expect(result.content).toContain(`Owner Workspace: ${process.cwd()}`);
+    }
+  });
+
+  it('should report warnings in status when owner PID is dead or workspace/session mismatch', async () => {
+    vi.mocked(core.loadLoopState).mockReturnValue({
+      nextRun: 1774900000000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid: 1234,
+      detached: false,
+      ownerPid: 999999, // Dead/stale owner PID
+      ownerSessionId: 'other-session-id',
+      ownerWorkspace: '/some/other/workspace',
+    });
+    vi.mocked(core.isLoopDaemonRunning).mockReturnValue(true);
+
+    const result = await action(mockContext, 'status');
+
+    expect(result).toBeDefined();
+    if (result && 'type' in result && result.type === 'message') {
+      expect(result.content).toContain(
+        'WARNING: The owning interactive process (PID: 999999) is no longer alive',
+      );
+      expect(result.content).toContain('WARNING: Current workspace');
+      expect(result.content).toContain('WARNING: Current session ID');
     }
   });
 });

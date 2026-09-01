@@ -67,6 +67,27 @@ describe('LoopTools', () => {
       expect(result.returnDisplay).toContain('started');
       expect(loopScheduler.startDaemon).toHaveBeenCalled();
     });
+
+    it('should schedule background loop with detached state as true by default', async () => {
+      const tool = new LoopTool(mockMessageBus);
+      const invocation = tool.createInvocation(
+        {
+          args: '-i 10m --background Analyze resource consumption',
+        },
+        mockMessageBus,
+        mockConfig,
+      );
+
+      await invocation.execute({
+        abortSignal: new AbortController().signal,
+      });
+      expect(loopScheduler.startDaemon).toHaveBeenCalledWith(
+        expect.objectContaining({
+          detached: true,
+        }),
+        mockConfig,
+      );
+    });
   });
 
   describe('LoopStopTool', () => {

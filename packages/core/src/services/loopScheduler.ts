@@ -48,6 +48,10 @@ export interface LoopState {
    * finishes or the next run starts.
    */
   currentAction?: string;
+  ownerSessionId?: string;
+  ownerPid?: number;
+  ownerWorkspace?: string;
+  detached?: boolean;
 }
 
 const STATE_FILE = 'state.json';
@@ -513,6 +517,38 @@ function isLoopState(obj: unknown): obj is LoopState {
     return false;
   }
 
+  if (
+    'ownerSessionId' in obj &&
+    typeof obj.ownerSessionId !== 'string' &&
+    typeof obj.ownerSessionId !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'ownerPid' in obj &&
+    typeof obj.ownerPid !== 'number' &&
+    typeof obj.ownerPid !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'ownerWorkspace' in obj &&
+    typeof obj.ownerWorkspace !== 'string' &&
+    typeof obj.ownerWorkspace !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'detached' in obj &&
+    typeof obj.detached !== 'boolean' &&
+    typeof obj.detached !== 'undefined'
+  ) {
+    return false;
+  }
+
   return true;
 }
 
@@ -904,6 +940,33 @@ export function stopLoopFromCurrentProcess(): void {
   }
 
   stopDaemon();
+}
+
+/**
+ * Stops session-owned background loops when the owning interactive session exits.
+ */
+export function stopSessionOwnedLoop(): void {
+  const state = loadState();
+  if (state) {
+    const isDetached =
+      state.detached !== undefined
+        ? state.detached
+        : state.ownerPid === undefined;
+    if (!isDetached && state.ownerPid === process.pid) {
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] BG Loop: Process exit cleanup stopping session-owned loop (PID: ${state.pid}, owner PID: ${state.ownerPid}).\n`,
+      );
+      try {
+        stopDaemon();
+      } catch (err) {
+        fs.appendFileSync(
+          getLogPath(),
+          `[${Date.now()}] BG Loop: Process exit cleanup failed to stop session-owned loop: ${err instanceof Error ? err.message : String(err)}.\n`,
+        );
+      }
+    }
+  }
 }
 
 export function isDaemonRunning(): boolean {

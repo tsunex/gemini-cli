@@ -35,7 +35,7 @@ export class LoopTool extends BaseDeclarativeTool<
           args: {
             type: 'string',
             description:
-              'Arguments for the loop, e.g., "-i 30s -b My prompt" or "stop" or "status"',
+              'Arguments for the loop, e.g., "-i 30s -b My prompt", "-i 30s -b --detach My prompt", "stop", or "status"',
           },
         },
         type: 'OBJECT',
@@ -65,6 +65,7 @@ export class LoopTool extends BaseDeclarativeTool<
         mode: 'background',
         prompt: commandToRun,
         intervalMs: parsed.intervalMs,
+        detached: parsed.detach ?? true,
       };
 
       startDaemon(loopState, config);

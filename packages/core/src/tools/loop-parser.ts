@@ -16,12 +16,14 @@ export interface ParsedLoopArgs {
   intervalMs?: number;
   prompt?: string;
   background?: boolean;
+  detach?: boolean;
 }
 
 export function parseLoopArgs(args: string): ParsedLoopArgs {
   const parts = args.trim().split(/\s+/);
   let interval: string | undefined;
   let background = false;
+  let detach = false;
   const promptParts: string[] = [];
 
   for (let i = 0; i < parts.length; i++) {
@@ -32,9 +34,15 @@ export function parseLoopArgs(args: string): ParsedLoopArgs {
       interval = parts[++i];
     } else if (part === '-b' || part === '--background') {
       background = true;
+    } else if (part === '-d' || part === '--detach') {
+      detach = true;
     } else {
       promptParts.push(part);
     }
+  }
+
+  if (detach && !background) {
+    throw new Error('--detach can only be used with --background');
   }
 
   const promptText = promptParts.join(' ').trim() || undefined;
@@ -74,5 +82,6 @@ export function parseLoopArgs(args: string): ParsedLoopArgs {
     intervalMs,
     prompt: promptText,
     background,
+    ...(detach ? { detach } : {}),
   };
 }
