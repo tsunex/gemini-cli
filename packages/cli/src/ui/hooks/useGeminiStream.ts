@@ -429,7 +429,7 @@ export const useGeminiStream = (
       (notification) => {
         addItem({
           type: MessageType.GEMINI,
-          text: notification.message,
+          text: `[Loop Background Response]\nPrompt: "${notification.prompt}"\n\n${notification.message}`,
         });
       },
       [addItem],

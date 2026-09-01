@@ -142,6 +142,13 @@ let timeoutId: NodeJS.Timeout | undefined;
 // ended without a completion signal (see COMPLETION_MARKER above). Kept as
 // one function so both code paths stay consistent with
 // design_loop_autonomous_v2.md §4.4's backoff/give-up policy.
+const FALLBACK_INTERVAL_MS = 60000; // 1 minute safe fallback
+
+function getSafeIntervalMs(state: LoopState): number {
+  const interval = state.intervalMs ?? FALLBACK_INTERVAL_MS;
+  return interval > 0 ? interval : FALLBACK_INTERVAL_MS;
+}
+
 function rescheduleAfterSetback(
   state: LoopState,
   config: Config,
@@ -182,7 +189,7 @@ function rescheduleAfterSetback(
   // with increasing patience instead of hammering the API or spinning
   // forever with no delay at all.
   const backoffMs = Math.min(
-    (state.intervalMs ?? 0) * 2 ** retryCount,
+    getSafeIntervalMs(state) * 2 ** retryCount,
     MAX_BACKOFF_MS,
   );
   const newState: LoopState = {
@@ -337,6 +344,7 @@ export function schedule(state: LoopState, config: Config): void {
             const notification = {
               type: 'loop_result',
               content: finalText,
+              prompt: state.prompt,
             };
             await sendNotification(JSON.stringify(notification));
           } catch (err) {
@@ -359,7 +367,7 @@ export function schedule(state: LoopState, config: Config): void {
 
         const newState: LoopState = {
           ...state,
-          nextRun: Date.now() + (state.intervalMs ?? 0),
+          nextRun: Date.now() + getSafeIntervalMs(state),
           // Reset failure tracking after a verified-complete run.
           retryCount: 0,
           lastError: undefined,

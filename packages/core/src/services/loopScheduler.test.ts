@@ -219,6 +219,7 @@ describe('loopScheduler', () => {
       JSON.stringify({
         type: 'loop_result',
         content: 'System status is normal.',
+        prompt: 'Verify system',
       }),
     );
 
@@ -446,6 +447,7 @@ describe('loopScheduler', () => {
       JSON.stringify({
         type: 'loop_result',
         content: 'text.txtを削除し、ループを停止しました。',
+        prompt: 'Delete text.txt and stop',
       }),
     );
     expect(loadState()).toBeUndefined();

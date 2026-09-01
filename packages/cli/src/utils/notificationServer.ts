@@ -16,6 +16,7 @@ import { registerCleanup } from './cleanup.js';
 interface LoopResultNotification {
   type: 'loop_result';
   content: string;
+  prompt?: string;
 }
 
 function isLoopResultNotification(obj: unknown): obj is LoopResultNotification {
@@ -25,7 +26,10 @@ function isLoopResultNotification(obj: unknown): obj is LoopResultNotification {
     'type' in obj &&
     obj.type === 'loop_result' &&
     'content' in obj &&
-    typeof obj.content === 'string'
+    typeof obj.content === 'string' &&
+    (!('prompt' in obj) ||
+      typeof obj.prompt === 'string' ||
+      typeof obj.prompt === 'undefined')
   );
 }
 
@@ -43,6 +47,7 @@ export function startNotificationServer(config: Config) {
             void messageBus.publish({
               type: MessageBusType.LOOP_RESULT,
               content: parsed.content,
+              prompt: parsed.prompt,
             });
             return;
           }

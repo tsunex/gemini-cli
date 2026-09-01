@@ -2190,10 +2190,14 @@ Logging in with Google... Restarting Gemini CLI to continue.
         }
       }
 
+      const textWithProvenance = event.prompt
+        ? `[Loop Background Response]\nPrompt: "${event.prompt}"\n\n${event.content}`
+        : `[Loop Background Response]\n\n${event.content}`;
+
       historyManager.addItem(
         {
           type: MessageType.GEMINI,
-          text: event.content,
+          text: textWithProvenance,
         },
         Date.now(),
       );

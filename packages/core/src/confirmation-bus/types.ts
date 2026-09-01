@@ -227,6 +227,7 @@ export interface BackgroundNotificationMessage {
 export interface LoopResultMessage {
   type: MessageBusType.LOOP_RESULT;
   content: string;
+  prompt?: string;
 }
 
 export type Message =
