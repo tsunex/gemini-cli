@@ -1006,6 +1006,39 @@ describe('loopScheduler', () => {
       expect(loadState()).toEqual(existingState);
     });
 
+    it('should still escalate an old daemon after startDaemon replaces state', () => {
+      const oldPid = 424242;
+      const newPid = 12345;
+      const killSpy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((_pid, _signal) => true);
+
+      const existingState: LoopState = {
+        pid: oldPid,
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'existing',
+      };
+      saveState(existingState);
+
+      const newState: LoopState = {
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'new',
+      };
+
+      startDaemon(newState, {} as Config, { force: true });
+
+      expect(loadState()).toEqual({ ...newState, pid: newPid });
+
+      killSpy.mockClear();
+      vi.advanceTimersByTime(TERMINATION_GRACE_MS);
+
+      expect(killSpy).toHaveBeenCalledWith(oldPid, 0);
+      expect(killSpy).toHaveBeenCalledWith(-oldPid, 'SIGKILL');
+      expect(loadState()).toEqual({ ...newState, pid: newPid });
+    });
+
     it('should not clear state if signaling daemon fails with EPERM', () => {
       const pid = 424242;
       const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {

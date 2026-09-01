@@ -320,6 +320,40 @@ improvements.
 
 ---
 
+## PR #3 Review Fixes (Round 8)
+
+This round addresses the latest Copilot review on commit `e6342c73b`.
+
+### Issue to Fix
+
+1. **SIGKILL escalation canceled by `startDaemon()` state replacement**:
+   `stopDaemon()` aborted delayed SIGKILL escalation whenever `state.json` no
+   longer pointed at the original PID. That is correct for external stop
+   requests, but `startDaemon({ force: true })` intentionally replaces state
+   with the new daemon before the old daemon's grace period expires. If the old
+   daemon ignored SIGTERM, the state guard could leave it running alongside the
+   new daemon.
+
+### Implementation
+
+- Added internal `StopDaemonOptions` for escalation behavior.
+- External `stopDaemon()` keeps the conservative state-change guard and clears
+  state after the grace period.
+- `startDaemon()` now calls `stopDaemon()` with:
+  - `abortEscalationOnStateChange: false`, so old-daemon SIGKILL escalation
+    still runs after replacement state is written.
+  - `clearStateAfterGrace: false`, so old-daemon cleanup cannot erase the new
+    daemon's persisted state.
+- Added a regression test proving `startDaemon({ force: true })` still escalates
+  the old PID and preserves the new daemon state.
+
+### Validation Plan
+
+- `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`
+- `npm run build -w @google/gemini-cli-core`
+
+---
+
 ## PR #3 Review Fixes (Round 7)
 
 This round addresses the latest Copilot review on commit `3d7c0a8d3`.

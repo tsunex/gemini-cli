@@ -701,7 +701,10 @@ export function startDaemon(
   let stateWrittenByThisAttempt = false;
   try {
     // Clean up any old daemon state before starting a new one.
-    stopDaemon();
+    stopDaemon({
+      abortEscalationOnStateChange: false,
+      clearStateAfterGrace: false,
+    });
 
     const nodeBin = process.argv[0];
     const scriptPath = process.argv[1];
@@ -791,7 +794,26 @@ function killDaemonTree(pid: number, signal: NodeJS.Signals): 'group' | 'pid' {
   return 'pid';
 }
 
-export function stopDaemon(): void {
+interface StopDaemonOptions {
+  /**
+   * When true, cancel delayed SIGKILL escalation if the persisted state no
+   * longer points at the original PID. External `/loop stop` uses this to
+   * avoid killing a potentially reused PID after unrelated state changes.
+   * `startDaemon()` disables it because it intentionally overwrites state
+   * with the replacement daemon while the old daemon may still need SIGKILL.
+   */
+  abortEscalationOnStateChange?: boolean;
+  /**
+   * When false, the delayed escalation never clears state. Used by
+   * `startDaemon()` so killing an old daemon cannot erase the newly spawned
+   * daemon's state.
+   */
+  clearStateAfterGrace?: boolean;
+}
+
+export function stopDaemon(options: StopDaemonOptions = {}): void {
+  const { abortEscalationOnStateChange = true, clearStateAfterGrace = true } =
+    options;
   const state = loadState();
   if (state && state.pid) {
     const pid = state.pid;
@@ -810,9 +832,11 @@ export function stopDaemon(): void {
 
       setTimeout(() => {
         const currentState = loadState();
-        // Only escalate if the daemon we intended to kill is still the one
-        // registered in the state, preventing us from killing a reused PID.
-        if (currentState?.pid !== pid) {
+        // External stops abort escalation once state no longer points at the
+        // target PID to reduce PID-reuse risk. startDaemon() disables this
+        // guard because it intentionally replaces state before the old daemon's
+        // grace period expires, and that old daemon may still need SIGKILL.
+        if (abortEscalationOnStateChange && currentState?.pid !== pid) {
           fs.appendFileSync(
             getLogPath(),
             `[${Date.now()}] Stale SIGKILL escalation for PID ${pid} aborted; loop state has changed.\n`,
@@ -832,7 +856,9 @@ export function stopDaemon(): void {
         }
         // Whether it was killed or already dead, the original daemon is gone.
         // It's now safe to clear the state associated with it.
-        clearState();
+        if (clearStateAfterGrace) {
+          clearState();
+        }
       }, TERMINATION_GRACE_MS).unref();
     } catch (e) {
       if (e instanceof Error && 'code' in e && e.code === 'ESRCH') {
