@@ -22,6 +22,7 @@ import {
   isDaemonRunning,
   normalizeStaleState,
   stopSessionOwnedLoop,
+  buildLoopExecutionPrompt,
   TERMINATION_GRACE_MS,
   BACKGROUND_RUN_TIMEOUT_MS,
   LoopAlreadyRunningError,
@@ -1423,6 +1424,105 @@ describe('loopScheduler', () => {
       // SIGTERM should NOT be sent
       expect(killSpy).not.toHaveBeenCalledWith(-pid, 'SIGTERM');
       expect(killSpy).not.toHaveBeenCalledWith(pid, 'SIGTERM');
+    });
+  });
+
+  describe('buildLoopExecutionPrompt', () => {
+    it('should auto-inject completion marker instruction if not present', () => {
+      const userPrompt = 'Check if system is active';
+      const executionPrompt = buildLoopExecutionPrompt(userPrompt);
+      expect(executionPrompt).toContain(userPrompt);
+      expect(executionPrompt).toContain('<<<LOOP_TASK_COMPLETE>>>');
+      expect(executionPrompt).toContain('Internal loop protocol requirement:');
+    });
+
+    it('should NOT double-inject if prompt already contains completion marker', () => {
+      const userPrompt = 'Check if system is active <<<LOOP_TASK_COMPLETE>>>';
+      const executionPrompt = buildLoopExecutionPrompt(userPrompt);
+      expect(executionPrompt).toBe(userPrompt);
+    });
+
+    it('should NOT double-inject if prompt already contains the instruction title', () => {
+      const userPrompt =
+        'Internal loop protocol requirement:\nCheck if system is active';
+      const executionPrompt = buildLoopExecutionPrompt(userPrompt);
+      expect(executionPrompt).toBe(userPrompt);
+    });
+
+    it('should use the auto-injected prompt for sendStream but preserve original prompt in LoopState and notification', async () => {
+      const rawMockConfig = {
+        _params: { targetDir: tempDir, sessionId: 'test-session' },
+        initialize: vi.fn().mockResolvedValue(undefined),
+        getContentGeneratorConfig: vi.fn().mockReturnValue(undefined),
+        fork: vi.fn().mockImplementation((params) => ({
+          ...rawMockConfig,
+          _params: { ...rawMockConfig._params, ...params },
+        })),
+        getGeminiClient: vi.fn().mockReturnValue({
+          initialize: vi.fn().mockResolvedValue(undefined),
+        }),
+      };
+      const mockConfig = rawMockConfig as unknown as Config;
+
+      const sendStreamMock = vi.fn().mockReturnValue(
+        (async function* () {
+          yield {
+            type: 'message',
+            role: 'agent',
+            content: [
+              { type: 'text', text: 'Result text\n<<<LOOP_TASK_COMPLETE>>>' },
+            ],
+          };
+        })(),
+      );
+
+      vi.mocked(LegacyAgentSession).mockImplementation(
+        () =>
+          ({
+            sendStream: sendStreamMock,
+          }) as unknown as LegacyAgentSession,
+      );
+
+      const { sendNotification } = await import(
+        '../utils/notificationClient.js'
+      );
+      const sendNotificationMock = vi.mocked(sendNotification);
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs without marker',
+        intervalMs: 5000,
+      };
+
+      schedule(state, mockConfig);
+      vi.advanceTimersByTime(5000);
+
+      for (let i = 0; i < 20; i++) {
+        vi.runAllTicks();
+        await Promise.resolve();
+      }
+
+      // Assert that LegacyAgentSession received the injected prompt
+      const sentMessage = sendStreamMock.mock.calls.at(-1)?.[0];
+      const sentText = sentMessage.message.content[0].text;
+      expect(sentText).toContain('Check logs without marker');
+      expect(sentText).toContain('Internal loop protocol requirement:');
+      expect(sentText).toContain('<<<LOOP_TASK_COMPLETE>>>');
+
+      // Assert that LoopState was preserved with original prompt
+      const loaded = loadState();
+      expect(loaded).toBeDefined();
+      expect(loaded!.prompt).toBe('Check logs without marker');
+
+      // Assert that notification contains the original prompt
+      expect(sendNotificationMock).toHaveBeenCalledWith(
+        JSON.stringify({
+          type: 'loop_result',
+          content: 'Result text',
+          prompt: 'Check logs without marker',
+        }),
+      );
     });
   });
 });

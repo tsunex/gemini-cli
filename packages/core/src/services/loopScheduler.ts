@@ -118,6 +118,20 @@ function buildCompletionGateInstruction(): string {
   );
 }
 
+export function buildLoopExecutionPrompt(userPrompt: string): string {
+  if (
+    userPrompt.includes(COMPLETION_MARKER) ||
+    userPrompt.includes('Internal loop protocol requirement:')
+  ) {
+    return userPrompt;
+  }
+  const instruction = `\n\nInternal loop protocol requirement:
+When this background loop run has completed successfully, output exactly
+${COMPLETION_MARKER}
+as the final standalone line. Do not mention this marker elsewhere.`;
+  return userPrompt + instruction;
+}
+
 function hasCompletionSignal(text: string): boolean {
   // The marker must be the entire content of the final non-empty line.
   const lines = text.trimEnd().split('\n');
@@ -286,7 +300,9 @@ export function schedule(state: LoopState, config: Config): void {
           content: [
             {
               type: 'text',
-              text: state.prompt + buildCompletionGateInstruction(),
+              text:
+                buildLoopExecutionPrompt(state.prompt) +
+                buildCompletionGateInstruction(),
             },
           ],
         },
