@@ -214,3 +214,121 @@ RUN  v3.2.4 /home/tsuneokam/workfolder/gemini-cli/packages/core
   - `npm run build -w @google/gemini-cli`: Succeeded.
   - `npm run build -w @google/gemini-cli-core`: Succeeded.
 - **All checks passed successfully.**
+
+---
+
+## PR #3 Review Fixes (Round 3)
+
+This round addresses two issues from the latest review on commit 578ba0c11.
+
+### Issues to Fix
+
+1.  **`notificationServer.test.ts`: Test stability**: The `connectClient()` test
+    can hang or flap. The test does not wait for the server to start listening,
+    and the `connectClient` promise never rejects on socket errors.
+    - **Plan:** Fix the test setup to `await` the server listening before
+      connecting. Modify `connectClient` to reject its promise on a socket
+      error.
+2.  **`loopScheduler.ts`: Inaccurate logging**: The log message in `stopDaemon`
+    incorrectly states that a `SIGTERM` was sent to the daemon process group,
+    even when `killDaemonTree()` falls back to killing a single PID.
+    - **Plan:** Adjust `killDaemonTree()` to report what it actually did (killed
+      a group or a single process) and make the log message in `stopDaemon`
+      reflect this accurately.
+
+### Validation Plan
+
+- `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`
+- `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`
+- `npm run build -w @google/gemini-cli`
+- `npm run build -w @google/gemini-cli-core`
+
+### Implementation & Validation
+
+#### 1. `notificationServer.test.ts` Stability (Issue #1)
+
+- **Status:** Implemented.
+- **Implementation:**
+  - Modified `startNotificationServer()` in
+    `packages/cli/src/utils/notificationServer.ts` to be an `async` function. It
+    now returns a `Promise` that resolves only when the server's `'listening'`
+    event is fired and rejects on `'error'`.
+  - Updated `beforeEach` in `packages/cli/src/utils/notificationServer.test.ts`
+    to `await` the server startup.
+  - Added an `.on('error', reject)` handler to the `connectClient` promise to
+    prevent test hangs on connection failure.
+- **Validation:**
+  - Ran
+    `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`.
+    All 5 tests passed, confirming the fix for the race condition.
+
+#### 2. `loopScheduler.ts` Logging Accuracy (Issue #2)
+
+- **Status:** Implemented.
+- **Implementation:**
+  - Modified `killDaemonTree()` in `packages/core/src/services/loopScheduler.ts`
+    to return either `'group'` or `'pid'`, indicating the actual target of the
+    kill signal.
+  - Updated `stopDaemon()` to use this return value to construct an accurate log
+    message (e.g., "Sent SIGTERM to daemon process group" vs. "Sent SIGTERM to
+    daemon process").
+- **Validation:**
+  - Verified no existing tests asserted on the old log message.
+  - Ran
+    `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`.
+    All 32 tests passed, confirming no regressions.
+
+#### Overall Validation
+
+- **Builds:** Ran the two specified build commands.
+  - `npm run build -w @google/gemini-cli`: Succeeded.
+  - `npm run build -w @google/gemini-cli-core`: Succeeded.
+- **All checks passed successfully.**
+- **Note:** Was unable to verify other inline comments on PR #3 as the provided
+  URL resulted in a 404 error. Addressed all issues specified in the prompt.
+
+---
+
+## PR #3 Review Fixes (Round 4 - Cleanup)
+
+This round addresses a runtime risk introduced by the previous fix. The
+`startNotificationServer()` was made `async`, but the production call site was
+not updated to `await` it, creating a risk of unhandled promise rejections. This
+fix reverts the function to be synchronous while keeping the test stability
+improvements.
+
+### Issues Fixed
+
+1.  **`startNotificationServer` API mismatch:** Reverted
+    `startNotificationServer()` to be a synchronous function that returns a
+    `net.Server` instance directly. This matches the existing production call
+    site in `gemini.tsx` and eliminates the risk of an unhandled promise
+    rejection.
+2.  **`notificationServer.test.ts` adaptation:** The test suite was updated to
+    work with the synchronous API. A new `waitForServer()` test helper was
+    introduced in `beforeEach` to explicitly wait for the server's `listening`
+    event, ensuring the server is fully ready before clients attempt to connect.
+    This preserves the test stability from the previous fix.
+
+### Validation Plan
+
+- `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`
+- `npm run typecheck --workspace ./packages/cli`
+- `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`
+- `npm run build -w @google/gemini-cli`
+- `npm run build -w @google/gemini-cli-core`
+
+### Validation Result
+
+- **Status:** Passed.
+- **Commands:**
+  - `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`
+    - 5 tests passed.
+  - `npm run typecheck --workspace ./packages/cli`
+    - Passed.
+  - `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`
+    - 32 tests passed.
+  - `npm run build -w @google/gemini-cli`
+    - Passed.
+  - `npm run build -w @google/gemini-cli-core`
+    - Passed.

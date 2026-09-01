@@ -25,6 +25,25 @@ vi.mock('./cleanup.js', () => ({
   registerCleanup: vi.fn(),
 }));
 
+// Test helper to wait for the server to be ready
+function waitForServer(server: net.Server): Promise<void> {
+  if (server.listening) {
+    return Promise.resolve();
+  }
+  return new Promise((resolve, reject) => {
+    const onError = (err: Error) => {
+      server.removeListener('listening', onListening);
+      reject(err);
+    };
+    const onListening = () => {
+      server.removeListener('error', onError);
+      resolve();
+    };
+    server.once('error', onError);
+    server.once('listening', onListening);
+  });
+}
+
 describe('notificationServer', () => {
   let config: Config;
   let client: net.Socket;
@@ -33,7 +52,7 @@ describe('notificationServer', () => {
   let socketPath: string;
   let tempDir: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     mockedPublish = vi.fn();
     const messageBus = {
       publish: mockedPublish,
@@ -51,6 +70,7 @@ describe('notificationServer', () => {
     socketPath = getSocketPath(config.storage);
 
     server = startNotificationServer(config);
+    await waitForServer(server);
   });
 
   afterEach(async () => {
@@ -72,11 +92,12 @@ describe('notificationServer', () => {
   });
 
   async function connectClient(): Promise<net.Socket> {
-    return new Promise((resolve) => {
+    return new Promise((resolve, reject) => {
       const newClient = net.createConnection({ path: socketPath }, () => {
         client = newClient;
         resolve(newClient);
       });
+      newClient.on('error', reject);
     });
   }
 

@@ -773,17 +773,18 @@ export const TERMINATION_GRACE_MS = 3000;
  * ConfigureProcessGroup/processSignalTarget pattern (see
  * report_11.md §2/§9-4).
  */
-function killDaemonTree(pid: number, signal: NodeJS.Signals): void {
+function killDaemonTree(pid: number, signal: NodeJS.Signals): 'group' | 'pid' {
   if (process.platform !== 'win32') {
     try {
       process.kill(-pid, signal);
-      return;
+      return 'group';
     } catch {
       // Fall through to single-PID signaling below (e.g. the process is not
       // a group leader).
     }
   }
   process.kill(pid, signal);
+  return 'pid';
 }
 
 export function stopDaemon(): void {
@@ -792,10 +793,11 @@ export function stopDaemon(): void {
     const pid = state.pid;
     try {
       process.kill(pid, 0);
-      killDaemonTree(pid, 'SIGTERM');
+      const killTarget = killDaemonTree(pid, 'SIGTERM');
+      const targetLabel = killTarget === 'group' ? 'process group' : 'process';
       fs.appendFileSync(
         getLogPath(),
-        `[${Date.now()}] Sent SIGTERM to daemon process group (PID: ${pid}).\n`,
+        `[${Date.now()}] Sent SIGTERM to daemon ${targetLabel} (PID: ${pid}).\n`,
       );
 
       setTimeout(() => {

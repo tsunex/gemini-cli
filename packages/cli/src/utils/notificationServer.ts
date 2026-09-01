@@ -82,21 +82,32 @@ export function startNotificationServer(config: Config): net.Server {
     });
   });
 
+  server.on('error', (err) => {
+    // This is a background server, so we shouldn't crash the main app.
+    // Instead, we'll just log the error via the message bus.
+    void messageBus.publish({
+      type: MessageBusType.BACKGROUND_NOTIFICATION,
+      message: `[ERROR] Notification server error: ${err.message}`,
+    });
+  });
+
+  server.on('listening', () => {
+    const cleanup = () => {
+      server.close();
+      if (fs.existsSync(socketPath)) {
+        fs.unlinkSync(socketPath);
+      }
+    };
+
+    registerCleanup(cleanup);
+  });
+
   // Clean up old socket file if it exists
   if (fs.existsSync(socketPath)) {
     fs.unlinkSync(socketPath);
   }
 
   server.listen(socketPath);
-
-  const cleanup = () => {
-    server.close();
-    if (fs.existsSync(socketPath)) {
-      fs.unlinkSync(socketPath);
-    }
-  };
-
-  registerCleanup(cleanup);
 
   return server;
 }
