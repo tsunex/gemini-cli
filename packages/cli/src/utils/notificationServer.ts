@@ -38,14 +38,22 @@ export function startNotificationServer(config: Config): net.Server {
   const messageBus = config.getMessageBus();
 
   const server = net.createServer((socket) => {
+    socket.setEncoding('utf8');
     let buffer = '';
 
-    const processMessage = (rawMessage: string) => {
-      if (!rawMessage) {
+    socket.on('data', (data: string) => {
+      buffer += data;
+    });
+
+    socket.on('end', () => {
+      const fullMessage = buffer;
+      if (!fullMessage.trim()) {
         return;
       }
+
+      // Attempt 1: Parse as a single, complete JSON object
       try {
-        const parsed: unknown = JSON.parse(rawMessage);
+        const parsed: unknown = JSON.parse(fullMessage);
         if (isLoopResultNotification(parsed)) {
           void messageBus.publish({
             type: MessageBusType.LOOP_RESULT,
@@ -55,30 +63,57 @@ export function startNotificationServer(config: Config): net.Server {
           return;
         }
       } catch {
-        // Fallback to plain text for non-JSON or malformed JSON
+        // Not a single valid JSON object, continue.
       }
+
+      // Attempt 2: Parse as newline-delimited JSON objects to support
+      // older test cases and raw socket testing.
+      const lines = fullMessage.split('\n');
+      const notifications: LoopResultNotification[] = [];
+      const nonEmptyLines = lines.filter((line) => line.trim() !== '');
+
+      if (nonEmptyLines.length > 0) {
+        let allLinesAreJson = true;
+        for (const line of nonEmptyLines) {
+          try {
+            const parsed: unknown = JSON.parse(line);
+            if (isLoopResultNotification(parsed)) {
+              notifications.push(parsed);
+            } else {
+              allLinesAreJson = false;
+              break;
+            }
+          } catch {
+            allLinesAreJson = false;
+            break;
+          }
+        }
+
+        if (allLinesAreJson) {
+          for (const notification of notifications) {
+            void messageBus.publish({
+              type: MessageBusType.LOOP_RESULT,
+              content: notification.content,
+              prompt: notification.prompt,
+            });
+          }
+          return;
+        }
+      }
+
+      // Fallback: Treat the entire buffer as a single plain text message.
       void messageBus.publish({
         type: MessageBusType.BACKGROUND_NOTIFICATION,
-        message: rawMessage,
+        message: fullMessage,
       });
-    };
-
-    socket.on('data', (data) => {
-      buffer += data.toString();
-      let boundary = buffer.indexOf('\n');
-      while (boundary !== -1) {
-        const rawMessage = buffer.substring(0, boundary);
-        buffer = buffer.substring(boundary + 1);
-        processMessage(rawMessage);
-        boundary = buffer.indexOf('\n');
-      }
     });
 
-    socket.on('end', () => {
-      // Flush any remaining buffer content when the client disconnects.
-      if (buffer.length > 0) {
-        processMessage(buffer);
-      }
+    socket.on('error', (err) => {
+      // Don't crash the server on a single socket error.
+      void messageBus.publish({
+        type: MessageBusType.BACKGROUND_NOTIFICATION,
+        message: `[ERROR] Notification socket error: ${err.message}`,
+      });
     });
   });
 

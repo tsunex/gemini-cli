@@ -332,3 +332,162 @@ improvements.
     - Passed.
   - `npm run build -w @google/gemini-cli-core`
     - Passed.
+
+---
+
+## PR #3 Review Fixes (Round 5)
+
+This round addresses three new issues from the latest review on commit
+f6dfc3e7b, and preserves prior local WIP.
+
+### Issues to Fix
+
+1.  **`packages/core/src/utils/notificationClient.ts` Framing**: Appending a
+    newline changes payload semantics for plain text messages. The client does
+    not need to force a delimiter.
+    - **Plan**: Fix framing without breaking split/coalesced JSON tests. Adopt
+      one-message-per-connection semantics for `notificationClient`.
+2.  **`packages/cli/src/utils/notificationServer.ts` Robustness**:
+    - Buffering with `data.toString()` on each chunk can corrupt UTF-8 multibyte
+      characters split across packets.
+    - An unhandled socket error can crash the server process.
+    - **Plan**: Set socket encoding to handle multibyte characters correctly.
+      Add a socket error handler. Add tests for both cases if practical.
+      Preserve `end`-buffer flush behavior.
+3.  **`packages/core/src/services/loopScheduler.ts` SIGKILL safety**: The
+    SIGKILL escalation callback only re-checks the PID. If the loop is stopped
+    or the PID is reused during the grace period, it could SIGKILL an unrelated
+    process.
+    - **Plan**: Add a guard to ensure the current persisted state still points
+      at the same PID before escalating to SIGKILL. Add a focused test.
+
+### Prior WIP to Preserve
+
+- **`notificationServer.test.ts` stability**: Test should wait for server
+  `listening` event and properly reject connection errors, while
+  `startNotificationServer` itself remains a synchronous function. (This seems
+  to be covered by "Round 4" fixes).
+- **`stopDaemon` logging**: Logging should accurately reflect whether a process
+  group or a single process was signaled. (This seems to be covered by "Round 3"
+  fixes).
+
+### Validation Plan
+
+- `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`
+- `npm run typecheck --workspace ./packages/cli`
+- `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`
+- `npm run build -w @google/gemini-cli`
+- `npm run build -w @google/gemini-cli-core`
+
+### Implementation & Validation
+
+- **Status:** Implemented.
+- **Implementation:**
+  - `packages/cli/src/utils/notificationServer.ts` now buffers an entire socket
+    connection before deciding how to publish it.
+  - It first tries to parse the complete buffer as one `loop_result` JSON
+    notification, then as newline-delimited JSON notifications, and finally
+    publishes the complete buffer as one legacy `BACKGROUND_NOTIFICATION`.
+  - `packages/cli/src/utils/notificationServer.test.ts` now covers multiline
+    plain-text notifications as a single message.
+- **Validation:**
+  - `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`
+    - 8 tests passed.
+  - `npm run typecheck --workspace ./packages/cli`
+    - Passed.
+  - `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`
+    - 33 tests passed.
+  - `npm run build -w @google/gemini-cli`
+    - Passed.
+  - `npm run build -w @google/gemini-cli-core`
+    - Passed.
+
+### Implementation & Validation
+
+#### 1. `notificationClient.ts` & `notificationServer.ts` Framing & Robustness (Issues #1 & #2)
+
+- **Status:** Implemented.
+- **Implementation:**
+  - Modified `packages/core/src/utils/notificationClient.ts` to remove the
+    appended newline from `client.write()`. The server's existing `end` event
+    handler correctly flushes the buffer, making the client-side delimiter
+    unnecessary.
+  - Modified `packages/cli/src/utils/notificationServer.ts`:
+    - Added `socket.setEncoding('utf8')` to correctly handle multi-byte
+      characters.
+    - Added a `socket.on('error', ...)` handler to prevent individual socket
+      errors from crashing the server.
+- **Validation:**
+  - Added new tests to `packages/cli/src/utils/notificationServer.test.ts`:
+    - `'handles a split multi-byte UTF-8 character'`: Confirms correct parsing
+      of split multi-byte characters.
+    - `'handles a socket error without crashing'`: Confirms the server remains
+      online after a socket error. The test was refactored to be more reliable
+      by directly emitting an error on the server-side socket instance.
+  - Ran
+    `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`.
+    All 7 tests passed.
+  - Ran `npm run typecheck --workspace ./packages/cli`. Passed.
+
+#### 2. `loopScheduler.ts` SIGKILL Safety (Issue #3)
+
+- **Status:** Implemented.
+- **Implementation:**
+  - Modified the `setTimeout` callback for `SIGKILL` escalation in
+    `stopDaemon()` in `packages/core/src/services/loopScheduler.ts`. It now
+    re-loads the state and verifies the `pid` before killing, preventing it from
+    killing a reused PID.
+  - Refactored `stopDaemon` to move the `clearState()` call into the
+    `setTimeout` callback, fixing a race condition where the state was cleared
+    before the escalation check could run.
+- **Validation:**
+  - Added a new test
+    `'should not escalate to SIGKILL if state has changed during grace period'`
+    to `loopScheduler.test.ts`.
+  - The refactoring fixed two existing failing tests related to `SIGKILL`
+    escalation.
+  - Ran
+    `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`.
+    All 33 tests passed.
+
+#### Overall Validation
+
+- **Builds:** Ran the two specified build commands.
+  - `npm run build -w @google/gemini-cli`: Succeeded.
+  - `npm run build -w @google/gemini-cli-core`: Succeeded.
+- **All checks passed successfully.**
+
+---
+
+## PR #3 Review Fixes (Round 6)
+
+This round addresses a semantic bug where the notification server would
+incorrectly split multi-line plain-text messages.
+
+### Issues to Fix
+
+1.  **`notificationServer.ts` incorrect message splitting**: The server's
+    `'data'` event handler processed messages line-by-line, splitting any data
+    on newline characters. This caused a single plain-text message containing
+    newlines to be fragmented into multiple `BACKGROUND_NOTIFICATION` messages.
+
+### Plan
+
+1.  Modify `notificationServer.ts` to buffer all data from a connection until
+    the `end` event.
+2.  Implement new logic in the `end` handler to process the complete buffer. The
+    logic will first attempt to parse the buffer as a single JSON object, then
+    as newline-delimited JSON objects, and finally fall back to treating the
+    entire buffer as a single plain-text message.
+3.  Add a new test to `notificationServer.test.ts` to verify that a plain-text
+    message with embedded newlines is published as a single
+    `BACKGROUND_NOTIFICATION`.
+4.  Run all validation steps.
+
+### Validation Plan
+
+- `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`
+- `npm run typecheck --workspace ./packages/cli`
+- `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`
+- `npm run build -w @google/gemini-cli`
+- `npm run build -w @google/gemini-cli-core`

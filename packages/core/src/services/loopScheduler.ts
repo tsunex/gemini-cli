@@ -801,6 +801,17 @@ export function stopDaemon(): void {
       );
 
       setTimeout(() => {
+        const currentState = loadState();
+        // Only escalate if the daemon we intended to kill is still the one
+        // registered in the state, preventing us from killing a reused PID.
+        if (currentState?.pid !== pid) {
+          fs.appendFileSync(
+            getLogPath(),
+            `[${Date.now()}] Stale SIGKILL escalation for PID ${pid} aborted; loop state has changed.\n`,
+          );
+          return;
+        }
+
         try {
           process.kill(pid, 0);
           fs.appendFileSync(
@@ -811,6 +822,9 @@ export function stopDaemon(): void {
         } catch {
           // Already exited on its own during the grace period.
         }
+        // Whether it was killed or already dead, the original daemon is gone.
+        // It's now safe to clear the state associated with it.
+        clearState();
       }, TERMINATION_GRACE_MS).unref();
     } catch (e) {
       if (e instanceof Error && 'code' in e && e.code === 'ESRCH') {
@@ -828,8 +842,10 @@ export function stopDaemon(): void {
       );
       throw e;
     }
+  } else {
+    // No state, or state without a PID. Just clean up.
+    clearState();
   }
-  clearState();
 }
 
 /**

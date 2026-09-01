@@ -1187,6 +1187,41 @@ describe('loopScheduler', () => {
       // Falls back to the plain PID once the group-signal attempt throws.
       expect(killSpy).toHaveBeenCalledWith(pid, 'SIGTERM');
     });
+
+    it('should not escalate to SIGKILL if state has changed during grace period', () => {
+      const pid = 424242;
+      const killSpy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((_pid, signal) => {
+          if (signal === 0) {
+            return true;
+          }
+          return true;
+        });
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        pid,
+      };
+      saveState(state);
+
+      stopDaemon();
+
+      // SIGTERM should be sent
+      expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
+
+      // During the grace period, the state changes (e.g., another loop started)
+      saveState({ ...state, pid: 56789 });
+
+      killSpy.mockClear();
+      vi.advanceTimersByTime(TERMINATION_GRACE_MS);
+
+      // SIGKILL should NOT be sent to the original pid.
+      expect(killSpy).not.toHaveBeenCalledWith(-pid, 'SIGKILL');
+      expect(killSpy).not.toHaveBeenCalledWith(pid, 'SIGKILL');
+    });
   });
 
   describe('normalizeStaleState', () => {
