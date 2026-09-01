@@ -17,6 +17,7 @@ import {
   clearState,
   startDaemon,
   stopDaemon,
+  stopLoopFromCurrentProcess,
   isDaemonRunning,
   normalizeStaleState,
   TERMINATION_GRACE_MS,
@@ -755,6 +756,23 @@ describe('loopScheduler', () => {
 
     expect(killSpy).toHaveBeenCalledWith(pid, 0);
     expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGKILL');
+  });
+
+  it('should clear state without signaling when loop-stop is called from the daemon itself', () => {
+    const killSpy = vi.spyOn(process, 'kill');
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'Check logs',
+      intervalMs: 5000,
+      pid: process.pid,
+    };
+    saveState(state);
+
+    stopLoopFromCurrentProcess();
+
+    expect(loadState()).toBeUndefined();
+    expect(killSpy).not.toHaveBeenCalled();
   });
 
   it('should not send SIGKILL if the daemon exits on its own during the grace period', () => {

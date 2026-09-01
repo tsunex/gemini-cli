@@ -709,6 +709,30 @@ export function stopDaemon(): void {
   clearState();
 }
 
+/**
+ * Stops the loop from a tool invocation. When called from the daemon process
+ * that is currently executing the loop, do NOT signal the daemon's own
+ * process group: the model may have emitted loop-stop in the same tool batch
+ * as preceding work (e.g. `rm text.txt`), and killing the process group here
+ * can terminate sibling tool calls before they finish. In that self-stop
+ * case, just clear the persisted schedule; the current run is allowed to wind
+ * down normally, send its final notification, and then exit without
+ * rescheduling.
+ */
+export function stopLoopFromCurrentProcess(): void {
+  const state = loadState();
+  if (state?.pid === process.pid) {
+    fs.appendFileSync(
+      getLogPath(),
+      `[${Date.now()}] Loop self-stop requested by current daemon (PID: ${process.pid}); clearing state without signaling current process group.\n`,
+    );
+    clearState();
+    return;
+  }
+
+  stopDaemon();
+}
+
 export function isDaemonRunning(): boolean {
   const state = loadState();
   if (!state || !state.pid) {
