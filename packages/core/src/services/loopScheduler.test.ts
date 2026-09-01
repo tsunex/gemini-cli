@@ -718,6 +718,70 @@ describe('loopScheduler', () => {
     expect(loadState()).toBeUndefined();
   });
 
+  describe('hasCompletionSignal / stripCompletionMarker', () => {
+     
+    const COMPLETION_MARKER = '<<<LOOP_TASK_COMPLETE>>>';
+
+    it('should detect completion signal only on the final line', () => {
+      // Deconstructed here to test the functions in isolation.
+      const hasCompletionSignal = (text: string): boolean => {
+        // The marker must be the entire content of the final non-empty line.
+        const lines = text.trimEnd().split('\n');
+        if (lines.length === 0) {
+          return false;
+        }
+        return lines[lines.length - 1].trim() === COMPLETION_MARKER;
+      };
+
+      expect(hasCompletionSignal(`Hello\n${COMPLETION_MARKER}`)).toBe(true);
+      expect(hasCompletionSignal(`Hello\n${COMPLETION_MARKER}\n`)).toBe(true);
+      expect(hasCompletionSignal(`Hello\n  ${COMPLETION_MARKER}  `)).toBe(true);
+      expect(hasCompletionSignal(COMPLETION_MARKER)).toBe(true);
+      expect(hasCompletionSignal(`${COMPLETION_MARKER}\nHello`)).toBe(false);
+      expect(hasCompletionSignal(`Hello ${COMPLETION_MARKER}`)).toBe(false);
+      expect(hasCompletionSignal('Hello')).toBe(false);
+      expect(hasCompletionSignal('')).toBe(false);
+    });
+
+    it('should strip completion signal only from the final line', () => {
+      const hasCompletionSignal = (text: string): boolean => {
+        const lines = text.trimEnd().split('\n');
+        if (lines.length === 0) {
+          return false;
+        }
+        return lines[lines.length - 1].trim() === COMPLETION_MARKER;
+      };
+      const stripCompletionMarker = (text: string): string => {
+        if (!hasCompletionSignal(text)) {
+          return text;
+        }
+        const trimmedText = text.trimEnd();
+        const lastLineIndex = trimmedText.lastIndexOf('\n');
+        if (lastLineIndex === -1) {
+          return '';
+        }
+        return trimmedText.substring(0, lastLineIndex).trimEnd();
+      };
+
+      expect(stripCompletionMarker(`Hello\n${COMPLETION_MARKER}`)).toBe(
+        'Hello',
+      );
+      expect(stripCompletionMarker(`Hello\n${COMPLETION_MARKER}\n\n`)).toBe(
+        'Hello',
+      );
+      expect(
+        stripCompletionMarker(
+          `Mentioning ${COMPLETION_MARKER} here\nThen done.\n${COMPLETION_MARKER}`,
+        ),
+      ).toBe(`Mentioning ${COMPLETION_MARKER} here\nThen done.`);
+      expect(stripCompletionMarker(COMPLETION_MARKER)).toBe('');
+      const noSignal = 'Hello\nworld';
+      expect(stripCompletionMarker(noSignal)).toBe(noSignal);
+      const signalNotAtEnd = `${COMPLETION_MARKER}\nHello`;
+      expect(stripCompletionMarker(signalNotAtEnd)).toBe(signalNotAtEnd);
+    });
+  });
+
   it('should prevent starting a second daemon while one is already running', () => {
     const state: LoopState = {
       nextRun: Date.now() + 5000,
@@ -748,6 +812,24 @@ describe('loopScheduler', () => {
     expect(() => startDaemon(state, {} as Config)).toThrow(
       'Loop daemon is already in the process of starting.',
     );
+  });
+
+  it('should treat a lock file with invalid PID as stale and proceed with startup', () => {
+    const lockFile = path.join(tempDir, '.startup.lock');
+    // Simulate a lock with a corrupt/empty PID.
+    fs.writeFileSync(lockFile, 'not-a-pid');
+
+    const spawnMock = vi.mocked(child_process.spawn);
+    const state: LoopState = {
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'test',
+    };
+
+    startDaemon(state, {} as Config);
+    expect(spawnMock).toHaveBeenCalled();
+    expect(loadState()?.pid).toBe(12345);
+    expect(fs.existsSync(lockFile)).toBe(false);
   });
 
   it('should clear startup lock file if spawn fails', () => {
@@ -796,6 +878,36 @@ describe('loopScheduler', () => {
     expect(finalState?.pid).toBe(12345);
   });
 
+  it('should not clear state if initial stopDaemon call fails', () => {
+    // We are forcing start, so isDaemonRunning isn't called.
+    // The first call to process.kill will be from stopDaemon.
+    vi.spyOn(process, 'kill').mockImplementationOnce(() => {
+      const err = new Error('EPERM') as NodeJS.ErrnoException;
+      err.code = 'EPERM';
+      throw err;
+    });
+
+    const existingState: LoopState = {
+      pid: 999,
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'existing',
+    };
+    saveState(existingState);
+
+    const newState: LoopState = {
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'new',
+    };
+
+    expect(() => startDaemon(newState, {} as Config, { force: true })).toThrow(
+      'EPERM',
+    );
+    // The state of the existing daemon should not be cleared.
+    expect(loadState()).toEqual(existingState);
+  });
+
   it('should not clear state if signaling daemon fails with EPERM', () => {
     const pid = 424242;
     const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
@@ -815,6 +927,25 @@ describe('loopScheduler', () => {
     expect(() => stopDaemon()).toThrow();
     expect(killSpy).toHaveBeenCalledWith(pid, 0);
     expect(loadState()).toEqual(state); // State should not be cleared
+  });
+
+  it('should return true from isDaemonRunning on EPERM', () => {
+    const pid = 424242;
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err = new Error('EPERM') as NodeJS.ErrnoException;
+      err.code = 'EPERM';
+      throw err;
+    });
+
+    const state: LoopState = {
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'test',
+      pid,
+    };
+    saveState(state);
+
+    expect(isDaemonRunning()).toBe(true);
   });
 
   it('should clear state if daemon is already dead (ESRCH)', () => {

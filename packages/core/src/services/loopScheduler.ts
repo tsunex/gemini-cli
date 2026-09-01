@@ -115,11 +115,30 @@ function buildCompletionGateInstruction(): string {
 }
 
 function hasCompletionSignal(text: string): boolean {
-  return text.includes(COMPLETION_MARKER);
+  // The marker must be the entire content of the final non-empty line.
+  const lines = text.trimEnd().split('\n');
+  if (lines.length === 0) {
+    return false;
+  }
+  return lines[lines.length - 1].trim() === COMPLETION_MARKER;
 }
 
 function stripCompletionMarker(text: string): string {
-  return text.split(COMPLETION_MARKER).join('').trim();
+  if (!hasCompletionSignal(text)) {
+    // Return original text if the signal is not present as the very last line.
+    // This avoids stripping mentions of the marker from elsewhere in the text.
+    return text;
+  }
+
+  const trimmedText = text.trimEnd();
+  const lastLineIndex = trimmedText.lastIndexOf('\n');
+  if (lastLineIndex === -1) {
+    // The whole string was just the marker, possibly with whitespace.
+    return '';
+  }
+
+  // Return everything before the last newline, trimming any leftover space.
+  return trimmedText.substring(0, lastLineIndex).trimEnd();
 }
 
 function getStatePath(): string {
@@ -627,7 +646,16 @@ export function startDaemon(
     if (e && typeof e === 'object' && 'code' in e && e.code === 'EEXIST') {
       // Lock file already exists. Check if it is stale.
       try {
-        const pid = Number(fs.readFileSync(lockPath, 'utf8'));
+        const pidStr = fs.readFileSync(lockPath, 'utf8');
+        const pid = Number(pidStr);
+        if (!Number.isSafeInteger(pid) || pid <= 0) {
+          // Stale lock with invalid/corrupt PID. Treat as if process is not running.
+          const err = new Error(
+            'Stale lock file with invalid PID',
+          ) as NodeJS.ErrnoException;
+          err.code = 'ESRCH';
+          throw err;
+        }
         process.kill(pid, 0); // Check if the process is running.
         // If the above line doesn't throw, the process is running.
         throw new Error('Loop daemon is already in the process of starting.');
@@ -660,6 +688,7 @@ export function startDaemon(
   }
 
   // If we're here, we have the lock.
+  let stateWrittenByThisAttempt = false;
   try {
     // Clean up any old daemon state before starting a new one.
     stopDaemon();
@@ -677,6 +706,7 @@ export function startDaemon(
 
     // Now, write the new state and spawn the daemon.
     saveState({ ...state, pid: undefined });
+    stateWrittenByThisAttempt = true;
 
     const child = spawn(nodeBin, [scriptPath, 'loop', 'daemon'], {
       detached: true,
@@ -698,8 +728,12 @@ export function startDaemon(
       throw new Error('Failed to retrieve process ID of the spawned daemon.');
     }
   } catch (e) {
-    // If anything fails during spawn, clear the state.
-    clearState();
+    // If anything fails during spawn, clear the state, but only if we were
+    // the ones who wrote it during this attempt. An error from stopDaemon()
+    // for a pre-existing process should not clear state.
+    if (stateWrittenByThisAttempt) {
+      clearState();
+    }
     // Re-throw the error after ensuring the lock is released.
     throw e;
   } finally {
@@ -822,7 +856,13 @@ export function isDaemonRunning(): boolean {
   try {
     process.kill(state.pid, 0);
     return true;
-  } catch {
+  } catch (e) {
+    if (e && typeof e === 'object' && 'code' in e && e.code === 'EPERM') {
+      // Process exists but we don't have permission to signal it.
+      // Treat it as running, as we cannot safely start a new daemon.
+      return true;
+    }
+    // For ESRCH (not found) or other errors, assume it's not running.
     return false;
   }
 }
