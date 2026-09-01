@@ -46,7 +46,7 @@ describe('configureNonInteractiveFallback', () => {
     expect(config.setFallbackModelHandler).not.toHaveBeenCalled();
   });
 
-  it('retries quota failures once with a distinct fallback model', async () => {
+  it('retries quota failures with a distinct fallback model', async () => {
     const { config, getRegisteredHandler } = createConfig();
     const warnings: string[] = [];
     configureNonInteractiveFallback(config, (message) =>
@@ -63,10 +63,38 @@ describe('configureNonInteractiveFallback', () => {
       }),
     );
 
-    expect(intent).toBe('retry_once');
+    expect(intent).toBe('retry_always');
     expect(warnings.join('')).toContain(
       'Retrying this headless request once with',
     );
+  });
+
+  it('stops if the same fallback pair is requested again', async () => {
+    const { config, getRegisteredHandler } = createConfig();
+    const warnings: string[] = [];
+    configureNonInteractiveFallback(config, (message) =>
+      warnings.push(message),
+    );
+    const quotaError = new TerminalQuotaError('quota exhausted', {
+      code: 429,
+      message: 'quota exhausted',
+      details: [],
+    });
+
+    const firstIntent = await getRegisteredHandler()?.(
+      'gemini-2.5-pro',
+      'gemini-3.5-flash',
+      quotaError,
+    );
+    const secondIntent = await getRegisteredHandler()?.(
+      'gemini-2.5-pro',
+      'gemini-3.5-flash',
+      quotaError,
+    );
+
+    expect(firstIntent).toBe('retry_always');
+    expect(secondIntent).toBe('stop');
+    expect(warnings).toHaveLength(1);
   });
 
   it('stops instead of retrying when no distinct fallback is available', async () => {
