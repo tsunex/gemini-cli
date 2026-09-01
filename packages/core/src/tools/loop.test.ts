@@ -13,8 +13,11 @@ import { type Config } from '../config/config.js';
 
 vi.mock('../services/loopScheduler.js', () => ({
   schedule: vi.fn(),
+  startDaemon: vi.fn(),
   loadState: vi.fn(),
   clearState: vi.fn(),
+  stopDaemon: vi.fn(),
+  stopLoopFromCurrentProcess: vi.fn(),
 }));
 
 describe('LoopTools', () => {
@@ -62,7 +65,7 @@ describe('LoopTools', () => {
       });
       expect(result.returnDisplay).toContain('Background loop for');
       expect(result.returnDisplay).toContain('started');
-      expect(loopScheduler.schedule).toHaveBeenCalled();
+      expect(loopScheduler.startDaemon).toHaveBeenCalled();
     });
   });
 
@@ -75,7 +78,7 @@ describe('LoopTools', () => {
         abortSignal: new AbortController().signal,
       });
       expect(result.returnDisplay).toBe('Loop stopped.');
-      expect(loopScheduler.clearState).toHaveBeenCalled();
+      expect(loopScheduler.stopLoopFromCurrentProcess).toHaveBeenCalled();
     });
   });
 

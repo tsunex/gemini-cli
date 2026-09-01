@@ -113,6 +113,9 @@ vi.mock('../tools/tool-registry', () => {
   ToolRegistryMock.prototype.unregisterTool = vi.fn();
   ToolRegistryMock.prototype.discoverAllTools = vi.fn();
   ToolRegistryMock.prototype.sortTools = vi.fn();
+  ToolRegistryMock.prototype.clone = vi.fn(function (this: unknown) {
+    return this;
+  });
   ToolRegistryMock.prototype.getAllTools = vi.fn(() => []); // Mock methods if needed
   ToolRegistryMock.prototype.getTool = vi.fn();
   ToolRegistryMock.prototype.getAllToolNames = vi.fn(() => []);
@@ -4416,6 +4419,7 @@ describe('Config fork', () => {
 
     // Explicitly initialize parent storage
     await parentConfig.storage.initialize();
+    parentConfig['_toolRegistry'] = new ToolRegistry(parentConfig, {} as never);
     parentConfig['initialized'] = true;
 
     // Fork the config

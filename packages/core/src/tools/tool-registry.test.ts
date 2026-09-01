@@ -277,6 +277,36 @@ describe('ToolRegistry', () => {
       expect(toolRegistry.getTool('mock-tool')).toBe(tool);
     });
 
+    it('should rebind cloned registries to the provided config for mainAgentTools filtering', () => {
+      const restrictedConfig = new Config({
+        ...baseConfigParams,
+        sessionId: 'restricted-parent',
+        mainAgentTools: ['glob'],
+      });
+      const restrictedRegistry = new ToolRegistry(
+        restrictedConfig,
+        mockMessageBus,
+        true,
+      );
+      restrictedRegistry.registerTool(new MockTool({ name: 'glob' }));
+      restrictedRegistry.registerTool(new MockTool({ name: 'write_file' }));
+
+      expect(
+        restrictedRegistry.getFunctionDeclarations().map((tool) => tool.name),
+      ).toEqual(['glob']);
+
+      const unrestrictedChildConfig = new Config({
+        ...baseConfigParams,
+        sessionId: 'background-child',
+        mainAgentTools: undefined,
+      });
+      const clonedRegistry = restrictedRegistry.clone(unrestrictedChildConfig);
+
+      expect(
+        clonedRegistry.getFunctionDeclarations().map((tool) => tool.name),
+      ).toEqual(['glob', 'write_file']);
+    });
+
     it('should pass modelId to getSchema when getting function declarations', () => {
       const tool = new MockTool({ name: 'mock-tool' });
       const getSchemaSpy = vi.spyOn(tool, 'getSchema');

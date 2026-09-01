@@ -420,13 +420,16 @@ export const useGeminiStream = (
     activeBackgroundExecutionId,
   );
 
-  // Poll for background loop notifications and dynamically insert into active chat UI
+  // Poll for background loop notifications and dynamically insert into active
+  // chat UI as a genuine assistant message (MessageType.GEMINI), not a system
+  // notice (MessageType.INFO), so it reads as the model actually "speaking"
+  // to the user in the conversation rather than a background status banner.
   useLoopNotificationListener(
     useCallback(
       (notification) => {
         addItem({
-          type: MessageType.INFO,
-          text: `🔔 **[Loop Background Response]** (${notification.prompt})\n\n${notification.message}`,
+          type: MessageType.GEMINI,
+          text: `[Loop Background Response]\nPrompt: "${notification.prompt}"\n\n${notification.message}`,
         });
       },
       [addItem],

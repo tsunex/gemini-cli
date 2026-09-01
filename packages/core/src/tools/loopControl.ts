@@ -11,7 +11,10 @@ import {
   BaseToolInvocation,
   Kind,
 } from './tools.js';
-import { loadState, stopDaemon } from '../services/loopScheduler.js';
+import {
+  loadState,
+  stopLoopFromCurrentProcess,
+} from '../services/loopScheduler.js';
 import { type MessageBus } from '../confirmation-bus/message-bus.js';
 import { type Config } from '../config/config.js';
 
@@ -32,7 +35,7 @@ export class LoopStopTool extends BaseDeclarativeTool<object, ToolResult> {
     messageBus: MessageBus,
     _config: Config,
   ): ToolInvocation<object, ToolResult> {
-    stopDaemon();
+    stopLoopFromCurrentProcess();
     const result: ToolResult = {
       llmContent: 'Loop stopped.',
       returnDisplay: 'Loop stopped.',

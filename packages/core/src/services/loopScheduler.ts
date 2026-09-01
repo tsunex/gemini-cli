@@ -18,9 +18,128 @@ export interface LoopState {
   prompt: string;
   intervalMs?: number;
   pid?: number;
+  /** Number of consecutive execution failures since the last success. */
+  retryCount?: number;
+  /** Message of the most recent execution failure, if any. */
+  lastError?: string;
+  /**
+   * Coarse-grained lifecycle phase of the loop, updated independently of
+   * `nextRun`. Lets `/loop status` distinguish "waiting for the next
+   * scheduled run" from "a run is currently in flight", which `nextRun`
+   * alone cannot express once a run has started (see
+   * report_11.md §6/§9-3).
+   */
+  currentPhase?: 'idle' | 'running';
+  /**
+   * Timestamp of the most recent observed activity: either a background
+   * run starting, a stream event being received during a run, or a run
+   * finishing. Lets a monitoring user/tool notice a daemon that is alive
+   * (per PID) but has gone silent/stuck mid-run, instead of only seeing a
+   * stale `nextRun` with no further signal.
+   */
+  lastHeartbeatAt?: number;
+  /**
+   * Short human-readable note about what the current run is doing right
+   * now, e.g. "Delegating to subagent 'generalist'". Subagent delegation
+   * (invoke_agent) blocks the run with no further stream events until the
+   * subagent finishes (which can legitimately take several minutes), so
+   * without this note a delegated run is indistinguishable from a truly
+   * stuck one in `/loop status` (see task_18.md). Cleared once the run
+   * finishes or the next run starts.
+   */
+  currentAction?: string;
 }
 
 const STATE_FILE = 'state.json';
+
+// Consecutive-failure handling: back off exponentially, but never wait longer
+// than MAX_BACKOFF_MS, and give up (stop rescheduling) after MAX_RETRY_COUNT
+// consecutive failures so a persistently broken loop does not retry forever
+// and does not fail silently either (see design_loop_autonomous_v2.md §4.4).
+const MAX_RETRY_COUNT = 10;
+const MAX_BACKOFF_MS = 30 * 60 * 1000; // 30 minutes
+
+// A background loop run is meant to be a short, single-purpose check (e.g.
+// "does text.txt exist?"), not an open-ended interactive session. Without an
+// explicit cap, invoke_agent/subagent delegation and unbounded exploration
+// can turn a single run into a multi-minute (or longer) chain of tool calls
+// that never lets schedule() reschedule the next run. Subagent delegation
+// itself stays fully enabled (it is required for autonomous operation) -
+// only the number of turns a single background run may take is bounded.
+const BACKGROUND_MAX_SESSION_TURNS = 8;
+
+// A background run can hang indefinitely with no further stream events at
+// all - e.g. a subagent delegation (invoke_agent) that itself never
+// responds/deadlocks, or a stuck network call. Unlike
+// BACKGROUND_MAX_SESSION_TURNS (which only bounds the *number* of turns),
+// nothing previously bounded *wall-clock time*, so a single hung run could
+// freeze the loop forever: currentPhase stays 'running', lastHeartbeatAt
+// stops advancing, and nextRun is never rescheduled - observable only as a
+// live daemon PID that has gone completely silent. A watchdog timer aborts
+// the in-flight AgentSession if no stream event arrives within this window,
+// letting the existing "no completion signal" setback/backoff path recover
+// the loop instead of it staying stuck until the process is killed by hand.
+export const BACKGROUND_RUN_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
+
+// A background run is only "done" if the agent explicitly confirms it
+// actually completed the requested check - not merely because it stopped
+// talking (e.g. it hit BACKGROUND_MAX_SESSION_TURNS mid-tangent, or gave up
+// silently). This mirrors zero's RequireCompletionSignal headless safeguard
+// (see report_11.md §3/§9-1): the model must positively assert completion,
+// rather than the scheduler assuming success by default. Subagent
+// delegation itself is not restricted by this - only whether a given run's
+// *result* counts as a verified success for scheduling/notification
+// purposes.
+const COMPLETION_MARKER = '<<<LOOP_TASK_COMPLETE>>>';
+
+function buildCompletionGateInstruction(): string {
+  return (
+    `\n\nIMPORTANT: This is an unattended background check running in ` +
+    `full auto-approval (YOLO) mode - you already have direct access to ` +
+    `all tools (file read/write/edit, shell commands, search, etc.) ` +
+    `without needing approval or a subagent. For simple, single-step, or ` +
+    `low-turn-count actions (e.g. checking whether a file exists, ` +
+    `deleting/creating one file, running one shell command), use the ` +
+    `relevant tool directly yourself - do NOT delegate the task to ` +
+    `invoke_agent/a subagent. Subagent delegation blocks this run with no ` +
+    `visible progress for as long as the subagent takes (which can be ` +
+    `several minutes) and consumes this run's limited turn budget for a ` +
+    `single call, so reserve it only for genuinely large, multi-file, or ` +
+    `high-turn-volume work.\n\n` +
+    `If, and only if, you have actually completed the task above and are ` +
+    `confident in the result, end your final response with a line ` +
+    `containing exactly: ${COMPLETION_MARKER}\n` +
+    `If you could not complete the task, got stuck, ran out of turns, or ` +
+    `are uncertain, do NOT include that marker.`
+  );
+}
+
+function hasCompletionSignal(text: string): boolean {
+  // The marker must be the entire content of the final non-empty line.
+  const lines = text.trimEnd().split('\n');
+  if (lines.length === 0) {
+    return false;
+  }
+  return lines[lines.length - 1].trim() === COMPLETION_MARKER;
+}
+
+function stripCompletionMarker(text: string): string {
+  if (!hasCompletionSignal(text)) {
+    // Return original text if the signal is not present as the very last line.
+    // This avoids stripping mentions of the marker from elsewhere in the text.
+    return text;
+  }
+
+  const trimmedText = text.trimEnd();
+  const lastLineIndex = trimmedText.lastIndexOf('\n');
+  if (lastLineIndex === -1) {
+    // The whole string was just the marker, possibly with whitespace.
+    return '';
+  }
+
+  // Return everything before the last newline, trimming any leftover space.
+  return trimmedText.substring(0, lastLineIndex).trimEnd();
+}
 
 function getStatePath(): string {
   return path.join(Storage.getProjectLoopStateDir(), STATE_FILE);
@@ -30,6 +149,10 @@ function getLogPath(): string {
   return path.join(Storage.getProjectLoopStateDir(), 'loop.log');
 }
 
+function getLockFilePath(): string {
+  return path.join(Storage.getProjectLoopStateDir(), '.startup.lock');
+}
+
 import { LegacyAgentSession } from '../agent/legacy-agent-session.js';
 import type { Config } from '../config/config.js';
 import { coreEvents, CoreEvent } from '../utils/events.js';
@@ -37,8 +160,84 @@ import { sendNotification } from '../utils/notificationClient.js';
 
 let timeoutId: NodeJS.Timeout | undefined;
 
+// Shared retry/backoff/give-up logic for anything that keeps a background
+// run from counting as a verified success: thrown errors *and* runs that
+// ended without a completion signal (see COMPLETION_MARKER above). Kept as
+// one function so both code paths stay consistent with
+// design_loop_autonomous_v2.md §4.4's backoff/give-up policy.
+const FALLBACK_INTERVAL_MS = 60000; // 1 minute safe fallback
+const MIN_INTERVAL_MS = 10000; // 10 seconds
+
+function getSafeIntervalMs(state: LoopState): number {
+  const interval = state.intervalMs ?? FALLBACK_INTERVAL_MS;
+  // Guard against non-positive intervals first.
+  if (interval <= 0) {
+    return FALLBACK_INTERVAL_MS;
+  }
+  // Then clamp to the minimum safety floor.
+  return Math.max(interval, MIN_INTERVAL_MS);
+}
+
+function rescheduleAfterSetback(
+  state: LoopState,
+  config: Config,
+  errorMessage: string,
+  options: { emitImmediateFeedback?: boolean } = {},
+): void {
+  if (options.emitImmediateFeedback) {
+    coreEvents.emit(CoreEvent.UserFeedback, {
+      severity: 'error',
+      message: `Error in loop execution: ${errorMessage}`,
+    });
+  }
+
+  // Do not reschedule if the loop was stopped/cleared while this run was in
+  // flight.
+  if (!fs.existsSync(getStatePath())) {
+    return;
+  }
+
+  const retryCount = (state.retryCount ?? 0) + 1;
+
+  if (retryCount > MAX_RETRY_COUNT) {
+    fs.appendFileSync(
+      getLogPath(),
+      `[${Date.now()}] BG Loop: Giving up after ${retryCount - 1} consecutive failures/incomplete runs. Stopping loop. Run "/loop <interval> <prompt> --background" to restart once the issue is resolved.\n`,
+    );
+    coreEvents.emit(CoreEvent.UserFeedback, {
+      severity: 'error',
+      message: `Loop stopped automatically after ${
+        retryCount - 1
+      } consecutive failures/incomplete runs. Last issue: ${errorMessage}`,
+    });
+    clearState();
+    return;
+  }
+
+  // Exponential backoff with a ceiling so a flaky/distracted loop retries
+  // with increasing patience instead of hammering the API or spinning
+  // forever with no delay at all.
+  const backoffMs = Math.min(
+    getSafeIntervalMs(state) * 2 ** retryCount,
+    MAX_BACKOFF_MS,
+  );
+  const newState: LoopState = {
+    ...state,
+    nextRun: Date.now() + backoffMs,
+    retryCount,
+    lastError: errorMessage,
+  };
+  fs.appendFileSync(
+    getLogPath(),
+    `[${Date.now()}] BG Loop: Rescheduling after setback #${retryCount} in ${backoffMs}ms.\n`,
+  );
+  schedule(newState, config);
+}
+
 export function schedule(state: LoopState, config: Config): void {
-  saveState(state);
+  // Persist as "idle" (waiting for the next scheduled run) - recordHeartbeat
+  // flips this to 'running' once the timer actually fires and a run starts.
+  saveState({ ...state, currentPhase: 'idle' });
   const now = Date.now();
   const delay = state.nextRun - now;
 
@@ -52,9 +251,18 @@ export function schedule(state: LoopState, config: Config): void {
       return;
     }
 
+    recordHeartbeat('running');
+
     const backgroundConfig = config.fork({
       approvalMode: ApprovalMode.YOLO, // Force auto-approval for silent background check
       sessionId: `background-loop-${Date.now()}`,
+      maxSessionTurns: BACKGROUND_MAX_SESSION_TURNS,
+      // Background loops are explicitly scheduled as YOLO-mode maintenance
+      // agents. Do not inherit a transient main-agent tool subset from the
+      // interactive session, otherwise simple autonomous actions such as
+      // deleting one file or calling loop-stop may be invisible to the
+      // background model even though those tools are registered.
+      mainAgentTools: undefined,
     });
 
     let accumulatedText = '';
@@ -71,26 +279,86 @@ export function schedule(state: LoopState, config: Config): void {
       });
       const stream = session.sendStream({
         message: {
-          content: [{ type: 'text', text: state.prompt }],
+          content: [
+            {
+              type: 'text',
+              text: state.prompt + buildCompletionGateInstruction(),
+            },
+          ],
         },
       });
 
-      for await (const event of stream) {
-        fs.appendFileSync(
-          getLogPath(),
-          `[${Date.now()}] BG Loop: Event received: ${JSON.stringify(event)}\n`,
-        );
-        if (event.type === 'message' && event.role === 'agent') {
+      // Watchdog: abort the run if no stream event arrives within
+      // BACKGROUND_RUN_TIMEOUT_MS. Reset on every event so a normally slow
+      // (but still progressing) run is never killed - only a run that goes
+      // fully silent (e.g. a deadlocked subagent delegation) is aborted.
+      let timedOut = false;
+      let watchdogTimer: ReturnType<typeof setTimeout> | undefined;
+      const clearWatchdog = () => {
+        if (watchdogTimer) {
+          clearTimeout(watchdogTimer);
+          watchdogTimer = undefined;
+        }
+      };
+      const armWatchdog = () => {
+        clearWatchdog();
+        watchdogTimer = setTimeout(() => {
+          timedOut = true;
           fs.appendFileSync(
             getLogPath(),
-            `[${Date.now()}] BG Loop: Agent turn: ${JSON.stringify(event.content)}\n`,
+            `[${Date.now()}] BG Loop: No stream activity for ${BACKGROUND_RUN_TIMEOUT_MS}ms - aborting hung run.\n`,
           );
-          for (const part of event.content) {
-            if (part.type === 'text') {
-              accumulatedText += part.text;
+          void session.abort();
+        }, BACKGROUND_RUN_TIMEOUT_MS);
+        // The watchdog timer should never keep the daemon process alive by itself.
+        watchdogTimer.unref?.();
+      };
+
+      try {
+        armWatchdog();
+        for await (const event of stream) {
+          armWatchdog();
+          // Detect subagent delegation (invoke_agent) so /loop status and
+          // loop.log can distinguish "waiting on a subagent - can
+          // legitimately take several minutes with no further events" from
+          // an unexplained silence, instead of both looking identical (see
+          // task_18.md / report_11.md real-world follow-up).
+          let currentAction: string | undefined;
+          if (event.type === 'tool_request' && event.name === 'invoke_agent') {
+            const agentName =
+              typeof event.args?.['agent_name'] === 'string'
+                ? event.args['agent_name']
+                : 'unknown';
+            currentAction = `Delegating to subagent '${agentName}' (may take several minutes with no further activity)`;
+            fs.appendFileSync(
+              getLogPath(),
+              `[${Date.now()}] BG Loop: ${currentAction}\n`,
+            );
+          }
+          // Update the on-disk heartbeat on every event so a monitoring user
+          // (via `/loop status`) can distinguish "actively working" from
+          // "hung/stuck" during a long-running background turn, instead of
+          // only seeing a stale nextRun with no further signal (see
+          // report_11.md §6/§9-3).
+          recordHeartbeat('running', currentAction);
+          fs.appendFileSync(
+            getLogPath(),
+            `[${Date.now()}] BG Loop: Event received: ${JSON.stringify(event)}\n`,
+          );
+          if (event.type === 'message' && event.role === 'agent') {
+            fs.appendFileSync(
+              getLogPath(),
+              `[${Date.now()}] BG Loop: Agent turn: ${JSON.stringify(event.content)}\n`,
+            );
+            for (const part of event.content) {
+              if (part.type === 'text') {
+                accumulatedText += part.text;
+              }
             }
           }
         }
+      } finally {
+        clearWatchdog();
       }
 
       fs.appendFileSync(
@@ -98,44 +366,74 @@ export function schedule(state: LoopState, config: Config): void {
         `[${Date.now()}] BG Loop: Stream finished. Result: ${accumulatedText}\n`,
       );
 
-      if (accumulatedText.trim()) {
-        try {
-          const notification = {
-            type: 'loop_result',
-            content: accumulatedText.trim(),
-          };
-          await sendNotification(JSON.stringify(notification));
-        } catch (err) {
-          fs.appendFileSync(
-            getLogPath(),
-            `[${Date.now()}] BG Loop: Failed to send notification: ${
-              err instanceof Error ? err.message : String(err)
-            }\n`,
-          );
+      if (hasCompletionSignal(accumulatedText)) {
+        const finalText = stripCompletionMarker(accumulatedText);
+        if (finalText) {
+          try {
+            const notification = {
+              type: 'loop_result',
+              content: finalText,
+              prompt: state.prompt,
+            };
+            await sendNotification(JSON.stringify(notification));
+          } catch (err) {
+            fs.appendFileSync(
+              getLogPath(),
+              `[${Date.now()}] BG Loop: Failed to send notification: ${
+                err instanceof Error ? err.message : String(err)
+              }\n`,
+            );
+          }
         }
-      }
 
-      // Check if the state file still exists before rescheduling (e.g. self-stopping called clearState)
-      if (fs.existsSync(getStatePath())) {
+        // Check if the state file still exists before rescheduling (e.g.
+        // self-stopping called clearState). This must happen after sending the
+        // final notification so a successful "delete file, then loop-stop"
+        // run still reports its result to the parent UI.
+        if (!fs.existsSync(getStatePath())) {
+          return;
+        }
+
         const newState: LoopState = {
           ...state,
-          nextRun: Date.now() + (state.intervalMs ?? 0),
+          nextRun: Date.now() + getSafeIntervalMs(state),
+          // Reset failure tracking after a verified-complete run.
+          retryCount: 0,
+          lastError: undefined,
         };
         fs.appendFileSync(
           getLogPath(),
-          `[${Date.now()}] BG Loop: Rescheduling next run.\n`,
+          `[${Date.now()}] BG Loop: Completion signal detected. Rescheduling next run.\n`,
         );
         schedule(newState, config);
+        return;
       }
+
+      // The run ended (turn cap reached, or the model simply stopped)
+      // without ever confirming it completed the requested task - e.g. it
+      // went on a tangent instead of checking what it was asked to check
+      // (see report_11.md §3/§9-1), or it was aborted by the watchdog above
+      // because it went completely silent. Do not surface this
+      // partial/uncertain output to the user, and do not treat it as a
+      // normal success: back off like a failure so a persistently
+      // distracted/hung loop does not spam notifications or spin at full
+      // speed forever.
+      const incompleteReason = timedOut
+        ? `Run aborted after ${BACKGROUND_RUN_TIMEOUT_MS}ms with no stream activity (possible hung subagent delegation or stalled network call).`
+        : 'Run ended without a completion signal (possible distraction or turn-cap cutoff).';
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] BG Loop: No completion signal detected - treating run as incomplete (timedOut=${timedOut}).\n`,
+      );
+      rescheduleAfterSetback(state, config, incompleteReason);
     } catch (e) {
       const errorMessage = e instanceof Error ? e.message : String(e);
       fs.appendFileSync(
         getLogPath(),
         `[${Date.now()}] BG Loop: CATCH BLOCK ERROR: ${errorMessage}\n`,
       );
-      coreEvents.emit(CoreEvent.UserFeedback, {
-        severity: 'error',
-        message: `Error in loop execution: ${errorMessage}`,
+      rescheduleAfterSetback(state, config, errorMessage, {
+        emitImmediateFeedback: true,
       });
     }
   }, delay);
@@ -174,7 +472,52 @@ function isLoopState(obj: unknown): obj is LoopState {
     return false;
   }
 
+  if (
+    'retryCount' in obj &&
+    typeof obj.retryCount !== 'number' &&
+    typeof obj.retryCount !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'lastError' in obj &&
+    typeof obj.lastError !== 'string' &&
+    typeof obj.lastError !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'currentPhase' in obj &&
+    obj.currentPhase !== 'idle' &&
+    obj.currentPhase !== 'running' &&
+    typeof obj.currentPhase !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'lastHeartbeatAt' in obj &&
+    typeof obj.lastHeartbeatAt !== 'number' &&
+    typeof obj.lastHeartbeatAt !== 'undefined'
+  ) {
+    return false;
+  }
+
+  if (
+    'currentAction' in obj &&
+    typeof obj.currentAction !== 'string' &&
+    typeof obj.currentAction !== 'undefined'
+  ) {
+    return false;
+  }
+
   return true;
+}
+
+function isValidDaemonPid(pid: unknown): pid is number {
+  return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0;
 }
 
 export function loadState(): LoopState | undefined {
@@ -203,7 +546,56 @@ export function loadState(): LoopState | undefined {
 export function saveState(state: LoopState): void {
   const statePath = getStatePath();
   fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  fs.writeFileSync(statePath, JSON.stringify(state, null, 2));
+
+  // Write to a unique temp file first, then atomically rename it into
+  // place, instead of writing state.json directly. A direct write that is
+  // interrupted mid-flight (process crash, SIGKILL, power loss - all real
+  // possibilities for an unattended background daemon) would leave a
+  // truncated/corrupt state.json that loadState() cannot parse, silently
+  // losing the schedule. rename() is atomic on the same filesystem, so
+  // state.json is always either the previous complete state or the new
+  // complete state, never a partial write. Mirrors zero's
+  // persistTaskLocked() temp-file-then-rename pattern (see
+  // report_11.md §4/§9-6). The temp filename includes the PID and a
+  // timestamp so concurrent writers (e.g. the interactive CLI and the
+  // daemon) cannot collide on the same temp path.
+  const tmpPath = `${statePath}.tmp-${process.pid}-${Date.now()}`;
+  fs.writeFileSync(tmpPath, JSON.stringify(state, null, 2));
+  fs.renameSync(tmpPath, statePath);
+}
+
+/**
+ * Records a heartbeat (current phase + timestamp) into the on-disk state
+ * without disturbing `nextRun`/the in-memory scheduling timer. Used during
+ * an in-flight background run so `/loop status` can tell "waiting for next
+ * scheduled run" apart from "a run is currently in progress", and detect a
+ * stuck run by how long ago the heartbeat was last updated (see
+ * report_11.md §6/§9-3). No-ops if the loop has been stopped (state.json
+ * removed) since this run started, so a stopped loop's state file is never
+ * accidentally resurrected by a stale in-flight run.
+ */
+function recordHeartbeat(
+  phase: 'idle' | 'running',
+  currentAction?: string,
+): void {
+  const statePath = getStatePath();
+  if (!fs.existsSync(statePath)) {
+    return;
+  }
+  const current = loadState();
+  if (!current) {
+    return;
+  }
+  saveState({
+    ...current,
+    currentPhase: phase,
+    lastHeartbeatAt: Date.now(),
+    // Explicitly clear currentAction when the caller does not pass one
+    // (e.g. a normal stream event after a subagent delegation finished),
+    // so a stale "Delegating to..." note does not linger past the point
+    // where it stopped being true.
+    currentAction,
+  });
 }
 
 export function clearState(): void {
@@ -224,59 +616,294 @@ export function clearTimer(): void {
   }
 }
 
-export function startDaemon(state: LoopState, _config: Config): void {
-  stopDaemon();
-
-  const statePath = getStatePath();
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  saveState(state);
-
-  const nodeBin = process.argv[0];
-  const scriptPath = process.argv[1];
-
-  // Filter out Gemini-specific environment variables to prevent session conflicts
-  const env: NodeJS.ProcessEnv = {};
-  for (const key in process.env) {
-    if (!key.startsWith('GEMINI_CLI_')) {
-      env[key] = process.env[key];
-    }
-  }
-
-  const child = spawn(nodeBin, [scriptPath, 'loop', 'daemon'], {
-    detached: true,
-    stdio: 'ignore',
-    env,
-  });
-
-  child.unref();
-
-  if (child.pid) {
-    const newState = { ...state, pid: child.pid };
-    saveState(newState);
-    fs.appendFileSync(
-      getLogPath(),
-      `[${Date.now()}] Daemon spawned with PID: ${child.pid}\n`,
+/**
+ * Thrown when a caller tries to start a new background loop daemon while one
+ * is already running. Prevents multiple daemons from racing to write the
+ * same state.json / execute the same prompt concurrently (see
+ * design_loop_autonomous_v2.md §4.3).
+ */
+export class LoopAlreadyRunningError extends Error {
+  constructor(pid: number) {
+    super(
+      `Loop daemon is already running (PID: ${pid}). Run "/loop stop" first if you want to reschedule.`,
     );
-  } else {
-    throw new Error('Failed to retrieve process ID of the spawned daemon.');
+    this.name = 'LoopAlreadyRunningError';
   }
 }
 
-export function stopDaemon(): void {
-  const state = loadState();
-  if (state && state.pid) {
+export function startDaemon(
+  state: LoopState,
+  _config: Config,
+  options: { force?: boolean } = {},
+): void {
+  const existing = loadState();
+  if (!options.force && existing?.pid && isDaemonRunning()) {
+    throw new LoopAlreadyRunningError(existing.pid);
+  }
+
+  const lockPath = getLockFilePath();
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
+
+  // Atomically acquire a lock file that contains our PID.
+  try {
+    const fd = fs.openSync(lockPath, 'wx');
     try {
-      process.kill(state.pid, 0);
-      process.kill(state.pid, 'SIGTERM');
-      fs.appendFileSync(
-        getLogPath(),
-        `[${Date.now()}] Sent SIGTERM to daemon PID: ${state.pid}\n`,
-      );
-    } catch {
-      // Ignore if process is already dead or permission denied
+      fs.writeSync(fd, String(process.pid));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e) {
+    if (e && typeof e === 'object' && 'code' in e && e.code === 'EEXIST') {
+      // Lock file already exists. Check if it is stale.
+      try {
+        const pidStr = fs.readFileSync(lockPath, 'utf8');
+        const pid = Number(pidStr);
+        if (!isValidDaemonPid(pid)) {
+          // Stale lock with invalid/corrupt PID. Treat as if process is not running.
+          const err = new Error(
+            'Stale lock file with invalid PID',
+          ) as NodeJS.ErrnoException;
+          err.code = 'ESRCH';
+          throw err;
+        }
+        process.kill(pid, 0); // Check if the process is running.
+        // If the above line doesn't throw, the process is running.
+        throw new Error('Loop daemon is already in the process of starting.');
+      } catch (err) {
+        // ESRCH means process is not found (stale lock).
+        // Any other error means we can't be sure, so we should not proceed.
+        if (
+          err &&
+          typeof err === 'object' &&
+          'code' in err &&
+          err.code === 'ESRCH'
+        ) {
+          // Stale lock, remove it and try to acquire a new one.
+          fs.unlinkSync(lockPath);
+          const fd = fs.openSync(lockPath, 'wx');
+          try {
+            fs.writeSync(fd, String(process.pid));
+          } finally {
+            fs.closeSync(fd);
+          }
+        } else {
+          // The lock is held by a running process or we can't verify.
+          throw new Error('Loop daemon is already in the process of starting.');
+        }
+      }
+    } else {
+      // Another error occurred during lock acquisition.
+      throw e;
     }
   }
-  clearState();
+
+  // If we're here, we have the lock.
+  let stateWrittenByThisAttempt = false;
+  try {
+    // Clean up any old daemon state before starting a new one.
+    stopDaemon({
+      abortEscalationOnStateChange: false,
+      clearStateAfterGrace: false,
+    });
+
+    const nodeBin = process.argv[0];
+    const scriptPath = process.argv[1];
+
+    // Filter out Gemini-specific environment variables to prevent session conflicts
+    const env: NodeJS.ProcessEnv = {};
+    for (const key in process.env) {
+      if (!key.startsWith('GEMINI_CLI_')) {
+        env[key] = process.env[key];
+      }
+    }
+
+    // Now, write the new state and spawn the daemon.
+    saveState({ ...state, pid: undefined });
+    stateWrittenByThisAttempt = true;
+
+    const child = spawn(nodeBin, [scriptPath, 'loop', 'daemon'], {
+      detached: true,
+      stdio: 'ignore',
+      env,
+    });
+
+    child.unref();
+
+    if (child.pid) {
+      // Success, save final state with PID.
+      saveState({ ...state, pid: child.pid });
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] Daemon spawned with PID: ${child.pid}\n`,
+      );
+    } else {
+      // This will be caught and the lock will be released.
+      throw new Error('Failed to retrieve process ID of the spawned daemon.');
+    }
+  } catch (e) {
+    // If anything fails during spawn, clear the state, but only if we were
+    // the ones who wrote it during this attempt. An error from stopDaemon()
+    // for a pre-existing process should not clear state.
+    if (stateWrittenByThisAttempt) {
+      clearState();
+    }
+    // Re-throw the error after ensuring the lock is released.
+    throw e;
+  } finally {
+    // Always release the lock.
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // Ignore errors, e.g., if the file doesn't exist.
+    }
+  }
+}
+
+// Grace period between SIGTERM and a forceful SIGKILL escalation when
+// stopping the daemon. Registering a SIGTERM handler (see
+// handleTerminationSignal below) is usually enough, but a daemon stuck in a
+// blocking/native call could still ignore it indefinitely; without this
+// escalation `/loop stop` could silently leave a zombie daemon running
+// forever. Mirrors openclaude's terminateBackgroundProcessTree() and zero's
+// TerminateProcessTree grace->SIGKILL pattern (see report_11.md §2/§9-2).
+export const TERMINATION_GRACE_MS = 3000;
+
+/**
+ * Signals the daemon's whole process group (negative PID) rather than just
+ * its own PID, so subprocesses it spawned (e.g. shell commands run via
+ * subagent/tool calls during a background run) are also terminated instead
+ * of being orphaned. `startDaemon()` spawns the daemon with
+ * `detached: true`, which on POSIX makes it the leader of a new process
+ * group, so `-pid` targets that whole group. Falls back to signaling just
+ * the PID on Windows (no POSIX process-group signaling) or if group
+ * signaling is otherwise unavailable. Mirrors zero's
+ * ConfigureProcessGroup/processSignalTarget pattern (see
+ * report_11.md §2/§9-4).
+ */
+function killDaemonTree(pid: number, signal: NodeJS.Signals): 'group' | 'pid' {
+  if (process.platform !== 'win32') {
+    try {
+      process.kill(-pid, signal);
+      return 'group';
+    } catch {
+      // Fall through to single-PID signaling below (e.g. the process is not
+      // a group leader).
+    }
+  }
+  process.kill(pid, signal);
+  return 'pid';
+}
+
+interface StopDaemonOptions {
+  /**
+   * When true, cancel delayed SIGKILL escalation if the persisted state no
+   * longer points at the original PID. External `/loop stop` uses this to
+   * avoid killing a potentially reused PID after unrelated state changes.
+   * `startDaemon()` disables it because it intentionally overwrites state
+   * with the replacement daemon while the old daemon may still need SIGKILL.
+   */
+  abortEscalationOnStateChange?: boolean;
+  /**
+   * When false, the delayed escalation never clears state. Used by
+   * `startDaemon()` so killing an old daemon cannot erase the newly spawned
+   * daemon's state.
+   */
+  clearStateAfterGrace?: boolean;
+}
+
+export function stopDaemon(options: StopDaemonOptions = {}): void {
+  const { abortEscalationOnStateChange = true, clearStateAfterGrace = true } =
+    options;
+  const state = loadState();
+  if (state && state.pid) {
+    const pid = state.pid;
+    if (!isValidDaemonPid(pid)) {
+      clearState();
+      return;
+    }
+    try {
+      process.kill(pid, 0);
+      const killTarget = killDaemonTree(pid, 'SIGTERM');
+      const targetLabel = killTarget === 'group' ? 'process group' : 'process';
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] Sent SIGTERM to daemon ${targetLabel} (PID: ${pid}).\n`,
+      );
+
+      setTimeout(() => {
+        const currentState = loadState();
+        // External stops abort escalation once state no longer points at the
+        // target PID to reduce PID-reuse risk. startDaemon() disables this
+        // guard because it intentionally replaces state before the old daemon's
+        // grace period expires, and that old daemon may still need SIGKILL.
+        if (abortEscalationOnStateChange && currentState?.pid !== pid) {
+          fs.appendFileSync(
+            getLogPath(),
+            `[${Date.now()}] Stale SIGKILL escalation for PID ${pid} aborted; loop state has changed.\n`,
+          );
+          return;
+        }
+
+        try {
+          process.kill(pid, 0);
+          fs.appendFileSync(
+            getLogPath(),
+            `[${Date.now()}] Daemon PID ${pid} still alive ${TERMINATION_GRACE_MS}ms after SIGTERM; escalating to SIGKILL.\n`,
+          );
+          killDaemonTree(pid, 'SIGKILL');
+        } catch {
+          // Already exited on its own during the grace period.
+        }
+        // Whether it was killed or already dead, the original daemon is gone.
+        // It's now safe to clear the state associated with it.
+        if (clearStateAfterGrace) {
+          clearState();
+        }
+      }, TERMINATION_GRACE_MS).unref();
+    } catch (e) {
+      if (e instanceof Error && 'code' in e && e.code === 'ESRCH') {
+        // ESRCH: process already gone.
+        clearState();
+        return;
+      }
+      // EPERM: process exists but we can't signal it (e.g. different user).
+      // Other errors: something else is wrong.
+      // In either case, don't clear state, and re-throw to surface the issue.
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] Failed to check/signal daemon process (PID: ${pid}): ${errorMessage}\n`,
+      );
+      throw e;
+    }
+  } else {
+    // No state, or state without a PID. Just clean up.
+    clearState();
+  }
+}
+
+/**
+ * Stops the loop from a tool invocation. When called from the daemon process
+ * that is currently executing the loop, do NOT signal the daemon's own
+ * process group: the model may have emitted loop-stop in the same tool batch
+ * as preceding work (e.g. `rm text.txt`), and killing the process group here
+ * can terminate sibling tool calls before they finish. In that self-stop
+ * case, just clear the persisted schedule; the current run is allowed to wind
+ * down normally, send its final notification, and then exit without
+ * rescheduling.
+ */
+export function stopLoopFromCurrentProcess(): void {
+  const state = loadState();
+  if (state?.pid === process.pid) {
+    fs.appendFileSync(
+      getLogPath(),
+      `[${Date.now()}] Loop self-stop requested by current daemon (PID: ${process.pid}); clearing state without signaling current process group.\n`,
+    );
+    clearState();
+    return;
+  }
+
+  stopDaemon();
 }
 
 export function isDaemonRunning(): boolean {
@@ -284,18 +911,106 @@ export function isDaemonRunning(): boolean {
   if (!state || !state.pid) {
     return false;
   }
+  if (!isValidDaemonPid(state.pid)) {
+    clearState();
+    return false;
+  }
   try {
     process.kill(state.pid, 0);
     return true;
-  } catch {
+  } catch (e) {
+    if (e && typeof e === 'object' && 'code' in e && e.code === 'EPERM') {
+      // Process exists but we don't have permission to signal it.
+      // Treat it as running, as we cannot safely start a new daemon.
+      return true;
+    }
+    // For ESRCH (not found) or other errors, assume it's not running.
     return false;
   }
 }
 
+/**
+ * Normalizes on-disk loop state that was left behind by a daemon process
+ * which is no longer running (crash, OS reboot, unexpected kill) before it
+ * is used to decide whether/how to restart. Without this:
+ *  - a stale `currentPhase: 'running'` would make `/loop status` claim a
+ *    run is still in progress forever, even though the process that would
+ *    ever update it again is gone;
+ *  - a stale `pid` could later coincidentally match an unrelated reused
+ *    PID once the OS recycles it, causing `isDaemonRunning()` to report a
+ *    false positive.
+ *
+ * A daemon found dead while `currentPhase` was `'running'` is also treated
+ * as a setback (retryCount is incremented) so a loop whose daemon keeps
+ * crashing immediately after every auto-restart still eventually gives up,
+ * instead of respawning forever in a tight crash loop.
+ *
+ * Mirrors zero's `loadTasks()` normalizing `StatusRunning` -> `StatusError`
+ * on load (see report_11.md §2/§9-5). Note: unlike openclaude's
+ * `verifyBackgroundSessionProcessIdentity()`, this does not attempt to
+ * verify that a live PID is actually *our* daemon and not an unrelated
+ * reused PID (that would require reading platform-specific process
+ * metadata such as `/proc/<pid>/cmdline`); this is called out as follow-up
+ * work in task_13.md rather than implemented here.
+ *
+ * Returns the normalized state to restart with, or `undefined` if the loop
+ * should be given up on instead (max retries exceeded) - in which case the
+ * on-disk state has already been cleared.
+ */
+export function normalizeStaleState(state: LoopState): LoopState | undefined {
+  const wasMidRun = state.currentPhase === 'running';
+  if (!wasMidRun) {
+    return { ...state, pid: undefined };
+  }
+
+  const retryCount = (state.retryCount ?? 0) + 1;
+  if (retryCount > MAX_RETRY_COUNT) {
+    fs.appendFileSync(
+      getLogPath(),
+      `[${Date.now()}] BG Loop: Daemon was found dead mid-run ${
+        retryCount - 1
+      } times in a row. Giving up and clearing schedule.\n`,
+    );
+    clearState();
+    return undefined;
+  }
+
+  fs.appendFileSync(
+    getLogPath(),
+    `[${Date.now()}] BG Loop: Detected stale in-flight state from a dead daemon (pid: ${state.pid}); normalizing before restart (setback #${retryCount}).\n`,
+  );
+
+  return {
+    ...state,
+    pid: undefined,
+    currentPhase: 'idle',
+    retryCount,
+    lastError:
+      'Daemon process was found dead while a run was in flight (crash or unexpected termination).',
+  };
+}
+
+// This process is the actual detached daemon spawned by startDaemon() (see
+// gemini.tsx's matching `process.argv.includes('loop') && ...('daemon')`
+// check that drives auto-start there). Only the daemon process should force
+// its own exit below; the interactive CLI process also loads this module and
+// must keep handling SIGINT/SIGTERM through its own shutdown path.
+const isLoopDaemonProcess =
+  process.argv.includes('loop') && process.argv.includes('daemon');
+
+function handleTerminationSignal(): void {
+  clearTimer();
+  // Registering a SIGINT/SIGTERM listener suppresses Node's default
+  // "terminate immediately" behavior for that signal. If a background run is
+  // in-flight (e.g. awaiting a long subagent call), the event loop stays
+  // alive and the daemon process would otherwise ignore `/loop stop`
+  // indefinitely. Force the daemon to exit so stopDaemon()'s SIGTERM is
+  // actually honored.
+  if (isLoopDaemonProcess) {
+    process.exit(0);
+  }
+}
+
 // Ensure active timers (not disk state) are cleared on process termination
-process.on('SIGINT', () => {
-  clearTimer();
-});
-process.on('SIGTERM', () => {
-  clearTimer();
-});
+process.on('SIGINT', handleTerminationSignal);
+process.on('SIGTERM', handleTerminationSignal);
