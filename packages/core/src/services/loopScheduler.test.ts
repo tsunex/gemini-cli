@@ -540,6 +540,108 @@ describe('loopScheduler', () => {
     expect(loaded!.nextRun).toBeGreaterThan(Date.now() + interval);
   });
 
+  it('should treat a run as incomplete if the marker is not the final standalone line', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir },
+      fork: vi.fn().mockReturnThis(),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as unknown as Config;
+
+    async function* mockSendStream() {
+      yield {
+        type: 'message',
+        role: 'agent',
+        content: [
+          {
+            type: 'text',
+            text: 'I mentioned <<<LOOP_TASK_COMPLETE>>> but I am not done yet.',
+          },
+        ],
+      };
+    }
+    vi.mocked(LegacyAgentSession).mockImplementation(
+      () =>
+        ({
+          sendStream: vi.fn().mockReturnValue(mockSendStream()),
+        }) as unknown as LegacyAgentSession,
+    );
+    const { sendNotification } = await import('../utils/notificationClient.js');
+    const sendNotificationMock = vi.mocked(sendNotification);
+
+    const state: LoopState = {
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'test',
+    };
+    schedule(state, rawMockConfig);
+    vi.advanceTimersByTime(0);
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+    const loaded = loadState();
+    expect(loaded).toBeDefined();
+    expect(loaded!.retryCount).toBe(1);
+    expect(loaded!.lastError).toContain('completion signal');
+  });
+
+  it('should strip only the final marker line, preserving earlier mentions', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir },
+      fork: vi.fn().mockReturnThis(),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as unknown as Config;
+
+    async function* mockSendStream() {
+      yield {
+        type: 'message',
+        role: 'agent',
+        content: [
+          {
+            type: 'text',
+            text: 'I mentioned <<<LOOP_TASK_COMPLETE>>> earlier.\nNow I am done.\n<<<LOOP_TASK_COMPLETE>>>',
+          },
+        ],
+      };
+    }
+    vi.mocked(LegacyAgentSession).mockImplementation(
+      () =>
+        ({
+          sendStream: vi.fn().mockReturnValue(mockSendStream()),
+        }) as unknown as LegacyAgentSession,
+    );
+    const { sendNotification } = await import('../utils/notificationClient.js');
+    const sendNotificationMock = vi.mocked(sendNotification);
+
+    const state: LoopState = {
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'test',
+    };
+    schedule(state, rawMockConfig);
+    vi.advanceTimersByTime(0);
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+
+    expect(sendNotificationMock).toHaveBeenCalledWith(
+      JSON.stringify({
+        type: 'loop_result',
+        content:
+          'I mentioned <<<LOOP_TASK_COMPLETE>>> earlier.\nNow I am done.',
+        prompt: 'test',
+      }),
+    );
+    const loaded = loadState();
+    expect(loaded).toBeDefined();
+    expect(loaded!.retryCount).toBe(0);
+  });
+
   it('should abort a hung run via the watchdog if no stream event arrives within BACKGROUND_RUN_TIMEOUT_MS, then treat it as incomplete', async () => {
     const rawMockConfig = {
       _params: { targetDir: tempDir, sessionId: 'test-session' },
@@ -626,6 +728,65 @@ describe('loopScheduler', () => {
     expect(loaded!.retryCount).toBe(1);
     expect(loaded!.lastError).toContain('aborted');
     expect(loaded!.nextRun).toBeGreaterThan(Date.now() + interval);
+  });
+
+  it('should clamp a too-short interval to the minimum safety floor when calculating backoff', async () => {
+    const rawMockConfig = {
+      _params: { targetDir: tempDir, sessionId: 'test-session' },
+      fork: vi.fn().mockReturnThis(),
+      getGeminiClient: vi.fn().mockReturnValue({
+        initialize: vi.fn().mockResolvedValue(undefined),
+      }),
+    } as unknown as Config;
+
+    // Simulate a run that ends without a completion signal to trigger backoff
+    async function* mockSendStream() {
+      yield {
+        type: 'message',
+        role: 'agent',
+        content: [{ type: 'text', text: 'no signal' }],
+      };
+    }
+    vi.mocked(LegacyAgentSession).mockImplementation(
+      () =>
+        ({
+          sendStream: vi.fn().mockReturnValue(mockSendStream()),
+        }) as unknown as LegacyAgentSession,
+    );
+    const { sendNotification } = await import('../utils/notificationClient.js');
+    const sendNotificationMock = vi.mocked(sendNotification);
+
+    const dangerouslyShortInterval = 100; // < 10s minimum
+    const state: LoopState = {
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'test',
+      intervalMs: dangerouslyShortInterval,
+      retryCount: 0,
+    };
+
+    schedule(state, rawMockConfig);
+    vi.advanceTimersByTime(0); // Run immediately
+    for (let i = 0; i < 20; i++) {
+      await Promise.resolve();
+    }
+
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+
+    const loaded = loadState();
+    expect(loaded).toBeDefined();
+    expect(loaded!.retryCount).toBe(1);
+
+    // Backoff should be based on the 10s minimum, not 100ms.
+    // 10000ms (clamped interval) * 2^1 (retry count) = 20000ms
+    const MIN_INTERVAL_MS = 10000;
+    const expectedBackoff = MIN_INTERVAL_MS * 2 ** 1;
+    expect(loaded!.nextRun).toBeGreaterThanOrEqual(
+      Date.now() + expectedBackoff - 1000, // Allow for small timing skew
+    );
+    expect(loaded!.nextRun).toBeLessThanOrEqual(
+      Date.now() + expectedBackoff + 1000,
+    );
   });
 
   it('should clear timer on process exit signals but preserve state.json', () => {
@@ -718,376 +879,314 @@ describe('loopScheduler', () => {
     expect(loadState()).toBeUndefined();
   });
 
-  describe('hasCompletionSignal / stripCompletionMarker', () => {
-     
-    const COMPLETION_MARKER = '<<<LOOP_TASK_COMPLETE>>>';
-
-    it('should detect completion signal only on the final line', () => {
-      // Deconstructed here to test the functions in isolation.
-      const hasCompletionSignal = (text: string): boolean => {
-        // The marker must be the entire content of the final non-empty line.
-        const lines = text.trimEnd().split('\n');
-        if (lines.length === 0) {
-          return false;
-        }
-        return lines[lines.length - 1].trim() === COMPLETION_MARKER;
+  describe('startDaemon & stopDaemon', () => {
+    it('should prevent starting a second daemon while one is already running', () => {
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        intervalMs: 5000,
+        pid: process.pid, // use our own pid so process.kill(pid, 0) succeeds
       };
+      saveState(state);
 
-      expect(hasCompletionSignal(`Hello\n${COMPLETION_MARKER}`)).toBe(true);
-      expect(hasCompletionSignal(`Hello\n${COMPLETION_MARKER}\n`)).toBe(true);
-      expect(hasCompletionSignal(`Hello\n  ${COMPLETION_MARKER}  `)).toBe(true);
-      expect(hasCompletionSignal(COMPLETION_MARKER)).toBe(true);
-      expect(hasCompletionSignal(`${COMPLETION_MARKER}\nHello`)).toBe(false);
-      expect(hasCompletionSignal(`Hello ${COMPLETION_MARKER}`)).toBe(false);
-      expect(hasCompletionSignal('Hello')).toBe(false);
-      expect(hasCompletionSignal('')).toBe(false);
-    });
-
-    it('should strip completion signal only from the final line', () => {
-      const hasCompletionSignal = (text: string): boolean => {
-        const lines = text.trimEnd().split('\n');
-        if (lines.length === 0) {
-          return false;
-        }
-        return lines[lines.length - 1].trim() === COMPLETION_MARKER;
-      };
-      const stripCompletionMarker = (text: string): string => {
-        if (!hasCompletionSignal(text)) {
-          return text;
-        }
-        const trimmedText = text.trimEnd();
-        const lastLineIndex = trimmedText.lastIndexOf('\n');
-        if (lastLineIndex === -1) {
-          return '';
-        }
-        return trimmedText.substring(0, lastLineIndex).trimEnd();
-      };
-
-      expect(stripCompletionMarker(`Hello\n${COMPLETION_MARKER}`)).toBe(
-        'Hello',
+      expect(isDaemonRunning()).toBe(true);
+      expect(() => startDaemon(state, {} as Config)).toThrow(
+        LoopAlreadyRunningError,
       );
-      expect(stripCompletionMarker(`Hello\n${COMPLETION_MARKER}\n\n`)).toBe(
-        'Hello',
+    });
+
+    it('should throw an error if another start is in progress by checking the lock file', () => {
+      const lockFile = path.join(tempDir, '.startup.lock');
+      // Simulate a lock held by a live process (our own).
+      fs.writeFileSync(lockFile, String(process.pid));
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'test',
+      };
+
+      expect(() => startDaemon(state, {} as Config)).toThrow(
+        'Loop daemon is already in the process of starting.',
       );
-      expect(
-        stripCompletionMarker(
-          `Mentioning ${COMPLETION_MARKER} here\nThen done.\n${COMPLETION_MARKER}`,
-        ),
-      ).toBe(`Mentioning ${COMPLETION_MARKER} here\nThen done.`);
-      expect(stripCompletionMarker(COMPLETION_MARKER)).toBe('');
-      const noSignal = 'Hello\nworld';
-      expect(stripCompletionMarker(noSignal)).toBe(noSignal);
-      const signalNotAtEnd = `${COMPLETION_MARKER}\nHello`;
-      expect(stripCompletionMarker(signalNotAtEnd)).toBe(signalNotAtEnd);
     });
-  });
 
-  it('should prevent starting a second daemon while one is already running', () => {
-    const state: LoopState = {
-      nextRun: Date.now() + 5000,
-      mode: 'fixed-prompt',
-      prompt: 'Check logs',
-      intervalMs: 5000,
-      pid: process.pid, // use our own pid so process.kill(pid, 0) succeeds
-    };
-    saveState(state);
+    it('should treat a lock file with invalid PID as stale and proceed with startup', () => {
+      const lockFile = path.join(tempDir, '.startup.lock');
+      // Simulate a lock with a corrupt/empty PID.
+      fs.writeFileSync(lockFile, 'not-a-pid');
 
-    expect(isDaemonRunning()).toBe(true);
-    expect(() => startDaemon(state, {} as Config)).toThrow(
-      LoopAlreadyRunningError,
-    );
-  });
+      const spawnMock = vi.mocked(child_process.spawn);
+      const state: LoopState = {
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'test',
+      };
 
-  it('should throw an error if another start is in progress by checking the lock file', () => {
-    const lockFile = path.join(tempDir, '.startup.lock');
-    // Simulate a lock held by a live process (our own).
-    fs.writeFileSync(lockFile, String(process.pid));
+      startDaemon(state, {} as Config);
+      expect(spawnMock).toHaveBeenCalled();
+      expect(loadState()?.pid).toBe(12345);
+      expect(fs.existsSync(lockFile)).toBe(false);
+    });
 
-    const state: LoopState = {
-      nextRun: Date.now() + 5000,
-      mode: 'fixed-prompt',
-      prompt: 'test',
-    };
+    it('should clear startup lock file if spawn fails', () => {
+      const spawnMock = vi
+        .mocked(child_process.spawn)
+        .mockImplementationOnce(() => {
+          throw new Error('Spawn failed');
+        });
 
-    expect(() => startDaemon(state, {} as Config)).toThrow(
-      'Loop daemon is already in the process of starting.',
-    );
-  });
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'test',
+      };
 
-  it('should treat a lock file with invalid PID as stale and proceed with startup', () => {
-    const lockFile = path.join(tempDir, '.startup.lock');
-    // Simulate a lock with a corrupt/empty PID.
-    fs.writeFileSync(lockFile, 'not-a-pid');
+      const lockFile = path.join(tempDir, '.startup.lock');
 
-    const spawnMock = vi.mocked(child_process.spawn);
-    const state: LoopState = {
-      nextRun: Date.now(),
-      mode: 'fixed-prompt',
-      prompt: 'test',
-    };
+      // The spawn failure now happens inside the big try/catch in startDaemon,
+      // so the error is re-thrown, but the lock should still be cleaned up.
+      expect(() => startDaemon(state, {} as Config)).toThrow('Spawn failed');
+      expect(spawnMock).toHaveBeenCalled();
 
-    startDaemon(state, {} as Config);
-    expect(spawnMock).toHaveBeenCalled();
-    expect(loadState()?.pid).toBe(12345);
-    expect(fs.existsSync(lockFile)).toBe(false);
-  });
+      // The thrown error should prevent any state from being saved.
+      expect(loadState()).toBeUndefined();
+      // The finally block should ensure the lock file is removed.
+      expect(fs.existsSync(lockFile)).toBe(false);
+    });
 
-  it('should clear startup lock file if spawn fails', () => {
-    const spawnMock = vi
-      .mocked(child_process.spawn)
-      .mockImplementationOnce(() => {
-        throw new Error('Spawn failed');
+    it('should release the startup lock file after a successful spawn', () => {
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'test',
+      };
+
+      const lockFile = path.join(tempDir, '.startup.lock');
+
+      startDaemon(state, {} as Config);
+
+      // Lock should be created during the process but removed by the end.
+      expect(fs.existsSync(lockFile)).toBe(false);
+
+      // The final state should be persisted with the PID.
+      const finalState = loadState();
+      expect(finalState).toBeDefined();
+      expect(finalState?.pid).toBe(12345);
+    });
+
+    it('should not clear state if initial stopDaemon call fails', () => {
+      // We are forcing start, so isDaemonRunning isn't called.
+      // The first call to process.kill will be from stopDaemon.
+      vi.spyOn(process, 'kill').mockImplementationOnce(() => {
+        const err = new Error('EPERM') as NodeJS.ErrnoException;
+        err.code = 'EPERM';
+        throw err;
       });
 
-    const state: LoopState = {
-      nextRun: Date.now() + 5000,
-      mode: 'fixed-prompt',
-      prompt: 'test',
-    };
+      const existingState: LoopState = {
+        pid: 999,
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'existing',
+      };
+      saveState(existingState);
 
-    const lockFile = path.join(tempDir, '.startup.lock');
+      const newState: LoopState = {
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'new',
+      };
 
-    // The spawn failure now happens inside the big try/catch in startDaemon,
-    // so the error is re-thrown, but the lock should still be cleaned up.
-    expect(() => startDaemon(state, {} as Config)).toThrow('Spawn failed');
-    expect(spawnMock).toHaveBeenCalled();
-
-    // The thrown error should prevent any state from being saved.
-    expect(loadState()).toBeUndefined();
-    // The finally block should ensure the lock file is removed.
-    expect(fs.existsSync(lockFile)).toBe(false);
-  });
-
-  it('should release the startup lock file after a successful spawn', () => {
-    const state: LoopState = {
-      nextRun: Date.now() + 5000,
-      mode: 'fixed-prompt',
-      prompt: 'test',
-    };
-
-    const lockFile = path.join(tempDir, '.startup.lock');
-
-    startDaemon(state, {} as Config);
-
-    // Lock should be created during the process but removed by the end.
-    expect(fs.existsSync(lockFile)).toBe(false);
-
-    // The final state should be persisted with the PID.
-    const finalState = loadState();
-    expect(finalState).toBeDefined();
-    expect(finalState?.pid).toBe(12345);
-  });
-
-  it('should not clear state if initial stopDaemon call fails', () => {
-    // We are forcing start, so isDaemonRunning isn't called.
-    // The first call to process.kill will be from stopDaemon.
-    vi.spyOn(process, 'kill').mockImplementationOnce(() => {
-      const err = new Error('EPERM') as NodeJS.ErrnoException;
-      err.code = 'EPERM';
-      throw err;
+      expect(() =>
+        startDaemon(newState, {} as Config, { force: true }),
+      ).toThrow('EPERM');
+      // The state of the existing daemon should not be cleared.
+      expect(loadState()).toEqual(existingState);
     });
 
-    const existingState: LoopState = {
-      pid: 999,
-      nextRun: Date.now(),
-      mode: 'fixed-prompt',
-      prompt: 'existing',
-    };
-    saveState(existingState);
-
-    const newState: LoopState = {
-      nextRun: Date.now(),
-      mode: 'fixed-prompt',
-      prompt: 'new',
-    };
-
-    expect(() => startDaemon(newState, {} as Config, { force: true })).toThrow(
-      'EPERM',
-    );
-    // The state of the existing daemon should not be cleared.
-    expect(loadState()).toEqual(existingState);
-  });
-
-  it('should not clear state if signaling daemon fails with EPERM', () => {
-    const pid = 424242;
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
-      const err = new Error('EPERM') as NodeJS.ErrnoException;
-      err.code = 'EPERM';
-      throw err;
-    });
-
-    const state: LoopState = {
-      nextRun: Date.now(),
-      mode: 'fixed-prompt',
-      prompt: 'test',
-      pid,
-    };
-    saveState(state);
-
-    expect(() => stopDaemon()).toThrow();
-    expect(killSpy).toHaveBeenCalledWith(pid, 0);
-    expect(loadState()).toEqual(state); // State should not be cleared
-  });
-
-  it('should return true from isDaemonRunning on EPERM', () => {
-    const pid = 424242;
-    vi.spyOn(process, 'kill').mockImplementation(() => {
-      const err = new Error('EPERM') as NodeJS.ErrnoException;
-      err.code = 'EPERM';
-      throw err;
-    });
-
-    const state: LoopState = {
-      nextRun: Date.now(),
-      mode: 'fixed-prompt',
-      prompt: 'test',
-      pid,
-    };
-    saveState(state);
-
-    expect(isDaemonRunning()).toBe(true);
-  });
-
-  it('should clear state if daemon is already dead (ESRCH)', () => {
-    const pid = 424242;
-    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
-      const err = new Error('ESRCH') as NodeJS.ErrnoException;
-      err.code = 'ESRCH';
-      throw err;
-    });
-
-    const state: LoopState = {
-      nextRun: Date.now(),
-      mode: 'fixed-prompt',
-      prompt: 'test',
-      pid,
-    };
-    saveState(state);
-
-    expect(() => stopDaemon()).not.toThrow();
-    expect(killSpy).toHaveBeenCalledWith(pid, 0);
-    expect(loadState()).toBeUndefined(); // State should be cleared
-  });
-
-  it('should escalate to SIGKILL if the daemon is still alive after the grace period', () => {
-    const pid = 424242; // arbitrary fake PID; process.kill is fully mocked below
-    const stillAlive = true;
-    const killSpy = vi
-      .spyOn(process, 'kill')
-      .mockImplementation((_pid, signal) => {
-        if (signal === 0 && !stillAlive) {
-          throw new Error('ESRCH: no such process');
-        }
-        return true;
+    it('should not clear state if signaling daemon fails with EPERM', () => {
+      const pid = 424242;
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+        const err = new Error('EPERM') as NodeJS.ErrnoException;
+        err.code = 'EPERM';
+        throw err;
       });
 
-    const state: LoopState = {
-      nextRun: Date.now() + 5000,
-      mode: 'fixed-prompt',
-      prompt: 'Check logs',
-      intervalMs: 5000,
-      pid,
-    };
-    saveState(state);
+      const state: LoopState = {
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'test',
+        pid,
+      };
+      saveState(state);
 
-    stopDaemon();
+      expect(() => stopDaemon()).toThrow();
+      expect(killSpy).toHaveBeenCalledWith(pid, 0);
+      expect(loadState()).toEqual(state); // State should not be cleared
+    });
 
-    expect(killSpy).toHaveBeenCalledWith(pid, 0);
-    // Signals the whole process group (-pid) rather than just the PID, so
-    // any subprocesses spawned during a background run are also terminated
-    // (see task_12.md / report_11.md §2/§9-4).
-    expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
-
-    // The daemon ignores SIGTERM (simulated stuck process) and is still
-    // alive when the grace period elapses.
-    killSpy.mockClear();
-    vi.advanceTimersByTime(TERMINATION_GRACE_MS);
-
-    expect(killSpy).toHaveBeenCalledWith(pid, 0);
-    expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGKILL');
-  });
-
-  it('should clear state without signaling when loop-stop is called from the daemon itself', () => {
-    const killSpy = vi.spyOn(process, 'kill');
-    const state: LoopState = {
-      nextRun: Date.now() + 5000,
-      mode: 'fixed-prompt',
-      prompt: 'Check logs',
-      intervalMs: 5000,
-      pid: process.pid,
-    };
-    saveState(state);
-
-    stopLoopFromCurrentProcess();
-
-    expect(loadState()).toBeUndefined();
-    expect(killSpy).not.toHaveBeenCalled();
-  });
-
-  it('should not send SIGKILL if the daemon exits on its own during the grace period', () => {
-    const pid = 424243;
-    let stillAlive = true;
-    const killSpy = vi
-      .spyOn(process, 'kill')
-      .mockImplementation((_pid, signal) => {
-        if (signal === 0 && !stillAlive) {
-          throw new Error('ESRCH: no such process');
-        }
-        return true;
+    it('should return true from isDaemonRunning on EPERM', () => {
+      const pid = 424242;
+      vi.spyOn(process, 'kill').mockImplementation(() => {
+        const err = new Error('EPERM') as NodeJS.ErrnoException;
+        err.code = 'EPERM';
+        throw err;
       });
 
-    const state: LoopState = {
-      nextRun: Date.now() + 5000,
-      mode: 'fixed-prompt',
-      prompt: 'Check logs',
-      intervalMs: 5000,
-      pid,
-    };
-    saveState(state);
+      const state: LoopState = {
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'test',
+        pid,
+      };
+      saveState(state);
 
-    stopDaemon();
+      expect(isDaemonRunning()).toBe(true);
+    });
 
-    // Simulate the daemon actually honoring SIGTERM and exiting before the
-    // grace period elapses.
-    stillAlive = false;
-    killSpy.mockClear();
-    vi.advanceTimersByTime(TERMINATION_GRACE_MS);
-
-    expect(killSpy).toHaveBeenCalledWith(pid, 0);
-    expect(killSpy).not.toHaveBeenCalledWith(-pid, 'SIGKILL');
-    expect(killSpy).not.toHaveBeenCalledWith(pid, 'SIGKILL');
-  });
-
-  it('should fall back to signaling just the PID if process-group signaling is unavailable', () => {
-    const pid = 424244;
-    const killSpy = vi
-      .spyOn(process, 'kill')
-      .mockImplementation((targetPid, signal) => {
-        if (signal === 0) {
-          return true; // liveness checks always succeed
-        }
-        if (typeof targetPid === 'number' && targetPid < 0) {
-          // Simulate an environment where group signaling is unavailable
-          // (e.g. the process is not a group leader).
-          throw new Error('ESRCH: no such process group');
-        }
-        return true;
+    it('should clear state if daemon is already dead (ESRCH)', () => {
+      const pid = 424242;
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+        const err = new Error('ESRCH') as NodeJS.ErrnoException;
+        err.code = 'ESRCH';
+        throw err;
       });
 
-    const state: LoopState = {
-      nextRun: Date.now() + 5000,
-      mode: 'fixed-prompt',
-      prompt: 'Check logs',
-      intervalMs: 5000,
-      pid,
-    };
-    saveState(state);
+      const state: LoopState = {
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'test',
+        pid,
+      };
+      saveState(state);
 
-    stopDaemon();
+      expect(() => stopDaemon()).not.toThrow();
+      expect(killSpy).toHaveBeenCalledWith(pid, 0);
+      expect(loadState()).toBeUndefined(); // State should be cleared
+    });
 
-    expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
-    // Falls back to the plain PID once the group-signal attempt throws.
-    expect(killSpy).toHaveBeenCalledWith(pid, 'SIGTERM');
+    it('should escalate to SIGKILL if the daemon is still alive after the grace period', () => {
+      const pid = 424242; // arbitrary fake PID; process.kill is fully mocked below
+      const stillAlive = true;
+      const killSpy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((_pid, signal) => {
+          if (signal === 0 && !stillAlive) {
+            throw new Error('ESRCH: no such process');
+          }
+          return true;
+        });
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        intervalMs: 5000,
+        pid,
+      };
+      saveState(state);
+
+      stopDaemon();
+
+      expect(killSpy).toHaveBeenCalledWith(pid, 0);
+      // Signals the whole process group (-pid) rather than just the PID, so
+      // any subprocesses spawned during a background run are also terminated
+      // (see task_12.md / report_11.md §2/§9-4).
+      expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
+
+      // The daemon ignores SIGTERM (simulated stuck process) and is still
+      // alive when the grace period elapses.
+      killSpy.mockClear();
+      vi.advanceTimersByTime(TERMINATION_GRACE_MS);
+
+      expect(killSpy).toHaveBeenCalledWith(pid, 0);
+      expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGKILL');
+    });
+
+    it('should clear state without signaling when loop-stop is called from the daemon itself', () => {
+      const killSpy = vi.spyOn(process, 'kill');
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        intervalMs: 5000,
+        pid: process.pid,
+      };
+      saveState(state);
+
+      stopLoopFromCurrentProcess();
+
+      expect(loadState()).toBeUndefined();
+      expect(killSpy).not.toHaveBeenCalled();
+    });
+
+    it('should not send SIGKILL if the daemon exits on its own during the grace period', () => {
+      const pid = 424243;
+      let stillAlive = true;
+      const killSpy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((_pid, signal) => {
+          if (signal === 0 && !stillAlive) {
+            throw new Error('ESRCH: no such process');
+          }
+          return true;
+        });
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        intervalMs: 5000,
+        pid,
+      };
+      saveState(state);
+
+      stopDaemon();
+
+      // Simulate the daemon actually honoring SIGTERM and exiting before the
+      // grace period elapses.
+      stillAlive = false;
+      killSpy.mockClear();
+      vi.advanceTimersByTime(TERMINATION_GRACE_MS);
+
+      expect(killSpy).toHaveBeenCalledWith(pid, 0);
+      expect(killSpy).not.toHaveBeenCalledWith(-pid, 'SIGKILL');
+      expect(killSpy).not.toHaveBeenCalledWith(pid, 'SIGKILL');
+    });
+
+    it('should fall back to signaling just the PID if process-group signaling is unavailable', () => {
+      const pid = 424244;
+      const killSpy = vi
+        .spyOn(process, 'kill')
+        .mockImplementation((targetPid, signal) => {
+          if (signal === 0) {
+            return true; // liveness checks always succeed
+          }
+          if (typeof targetPid === 'number' && targetPid < 0) {
+            // Simulate an environment where group signaling is unavailable
+            // (e.g. the process is not a group leader).
+            throw new Error('ESRCH: no such process group');
+          }
+          return true;
+        });
+
+      const state: LoopState = {
+        nextRun: Date.now() + 5000,
+        mode: 'fixed-prompt',
+        prompt: 'Check logs',
+        intervalMs: 5000,
+        pid,
+      };
+      saveState(state);
+
+      stopDaemon();
+
+      expect(killSpy).toHaveBeenCalledWith(-pid, 'SIGTERM');
+      // Falls back to the plain PID once the group-signal attempt throws.
+      expect(killSpy).toHaveBeenCalledWith(pid, 'SIGTERM');
+    });
   });
 
   describe('normalizeStaleState', () => {

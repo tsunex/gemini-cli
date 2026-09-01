@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as os from 'node:os';
 import {
   vi,
   describe,
@@ -30,6 +31,7 @@ describe('notificationServer', () => {
   let mockedPublish: MockInstance;
   let server: net.Server;
   let socketPath: string;
+  let tempDir: string;
 
   beforeEach(() => {
     mockedPublish = vi.fn();
@@ -37,19 +39,16 @@ describe('notificationServer', () => {
       publish: mockedPublish,
     } as unknown as MessageBus;
 
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'gemini-cli-test-'));
+
     config = {
       storage: {
-        getProjectTempDir: () => '/tmp/gemini-cli-test',
+        getProjectTempDir: () => tempDir,
       },
       getMessageBus: () => messageBus,
     } as unknown as Config;
 
     socketPath = getSocketPath(config.storage);
-
-    // Ensure the temp dir exists
-    if (!fs.existsSync(path.dirname(socketPath))) {
-      fs.mkdirSync(path.dirname(socketPath), { recursive: true });
-    }
 
     server = startNotificationServer(config);
   });
@@ -60,13 +59,16 @@ describe('notificationServer', () => {
         client.destroy();
       }
       server.close((err) => {
-        if (fs.existsSync(socketPath)) {
-          fs.unlinkSync(socketPath);
+        if (err) {
+          // Still try to cleanup
+          fs.rmSync(tempDir, { recursive: true, force: true });
+          return reject(err);
         }
-        if (err) return reject(err);
         resolve();
       });
     });
+    // Clean up the temp directory
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   async function connectClient(): Promise<net.Socket> {
@@ -162,6 +164,23 @@ describe('notificationServer', () => {
     expect(event).toEqual({
       type: MessageBusType.BACKGROUND_NOTIFICATION,
       message: 'just plain text',
+    });
+  });
+
+  it('handles a message without a trailing newline before client disconnects', async () => {
+    const eventPromise = waitForEvent();
+    const client = await connectClient();
+
+    const payload = { type: 'loop_result', content: 'final message' };
+    // Note: No trailing newline
+    client.write(JSON.stringify(payload));
+    client.end();
+
+    const event = await eventPromise;
+    expect(event).toEqual({
+      type: MessageBusType.LOOP_RESULT,
+      content: 'final message',
+      prompt: undefined,
     });
   });
 });

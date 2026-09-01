@@ -39,34 +39,45 @@ export function startNotificationServer(config: Config): net.Server {
 
   const server = net.createServer((socket) => {
     let buffer = '';
+
+    const processMessage = (rawMessage: string) => {
+      if (!rawMessage) {
+        return;
+      }
+      try {
+        const parsed: unknown = JSON.parse(rawMessage);
+        if (isLoopResultNotification(parsed)) {
+          void messageBus.publish({
+            type: MessageBusType.LOOP_RESULT,
+            content: parsed.content,
+            prompt: parsed.prompt,
+          });
+          return;
+        }
+      } catch {
+        // Fallback to plain text for non-JSON or malformed JSON
+      }
+      void messageBus.publish({
+        type: MessageBusType.BACKGROUND_NOTIFICATION,
+        message: rawMessage,
+      });
+    };
+
     socket.on('data', (data) => {
       buffer += data.toString();
       let boundary = buffer.indexOf('\n');
       while (boundary !== -1) {
         const rawMessage = buffer.substring(0, boundary);
         buffer = buffer.substring(boundary + 1);
+        processMessage(rawMessage);
         boundary = buffer.indexOf('\n');
+      }
+    });
 
-        if (rawMessage) {
-          try {
-            const parsed: unknown = JSON.parse(rawMessage);
-            if (isLoopResultNotification(parsed)) {
-              void messageBus.publish({
-                type: MessageBusType.LOOP_RESULT,
-                content: parsed.content,
-                prompt: parsed.prompt,
-              });
-              continue;
-            }
-          } catch {
-            // Ignore parse errors, fallback to legacy plain text
-          }
-
-          void messageBus.publish({
-            type: MessageBusType.BACKGROUND_NOTIFICATION,
-            message: rawMessage,
-          });
-        }
+    socket.on('end', () => {
+      // Flush any remaining buffer content when the client disconnects.
+      if (buffer.length > 0) {
+        processMessage(buffer);
       }
     });
   });
