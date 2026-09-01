@@ -53,6 +53,7 @@ import {
 } from './utils/errors.js';
 import { TextOutput } from './ui/utils/textOutput.js';
 import { runNonInteractive as runNonInteractiveAgentSession } from './nonInteractiveCliAgentSession.js';
+import { configureNonInteractiveFallback } from './nonInteractiveFallback.js';
 
 interface RunNonInteractiveParams {
   config: Config;
@@ -101,6 +102,7 @@ export async function runNonInteractive(
 
     const { stdout: workingStdout } = createWorkingStdio();
     const textOutput = new TextOutput(workingStdout);
+    configureNonInteractiveFallback(config);
 
     const handleUserFeedback = (payload: UserFeedbackPayload) => {
       const prefix = payload.severity.toUpperCase();
