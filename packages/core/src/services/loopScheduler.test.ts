@@ -1046,6 +1046,36 @@ describe('loopScheduler', () => {
       expect(isDaemonRunning()).toBe(true);
     });
 
+    it('should treat invalid persisted PID as stale when checking daemon liveness', () => {
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const state: LoopState = {
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'test',
+        pid: -process.pid,
+      };
+      saveState(state);
+
+      expect(isDaemonRunning()).toBe(false);
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(loadState()).toBeUndefined();
+    });
+
+    it('should clear invalid persisted PID without signaling during stop', () => {
+      const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => true);
+      const state: LoopState = {
+        nextRun: Date.now(),
+        mode: 'fixed-prompt',
+        prompt: 'test',
+        pid: -process.pid,
+      };
+      saveState(state);
+
+      expect(() => stopDaemon()).not.toThrow();
+      expect(killSpy).not.toHaveBeenCalled();
+      expect(loadState()).toBeUndefined();
+    });
+
     it('should clear state if daemon is already dead (ESRCH)', () => {
       const pid = 424242;
       const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {

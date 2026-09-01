@@ -318,6 +318,35 @@ improvements.
 - `npm run build -w @google/gemini-cli`
 - `npm run build -w @google/gemini-cli-core`
 
+---
+
+## PR #3 Review Fixes (Round 7)
+
+This round addresses the latest Copilot review on commit `3d7c0a8d3`.
+
+### Issue to Fix
+
+1. **Persisted daemon PID validation**: `stopDaemon()` and `isDaemonRunning()`
+   trusted `state.pid` after only checking truthiness. A corrupt/tampered
+   negative PID could be passed to `process.kill`, which has process-group
+   semantics on POSIX, or otherwise produce misleading liveness results.
+
+### Implementation
+
+- Added shared `isValidDaemonPid()` validation requiring a positive safe
+  integer.
+- Reused it for startup lock PID validation.
+- `stopDaemon()` now treats invalid persisted PIDs as stale state and clears the
+  state without signaling anything.
+- `isDaemonRunning()` now treats invalid persisted PIDs as stale state, clears
+  the state, and returns `false`.
+- Added focused tests proving invalid persisted PIDs do not call `process.kill`.
+
+### Validation Plan
+
+- `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`
+- `npm run build -w @google/gemini-cli-core`
+
 ### Validation Result
 
 - **Status:** Passed.

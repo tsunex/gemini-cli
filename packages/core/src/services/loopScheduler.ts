@@ -516,6 +516,10 @@ function isLoopState(obj: unknown): obj is LoopState {
   return true;
 }
 
+function isValidDaemonPid(pid: unknown): pid is number {
+  return typeof pid === 'number' && Number.isSafeInteger(pid) && pid > 0;
+}
+
 export function loadState(): LoopState | undefined {
   try {
     const statePath = getStatePath();
@@ -654,7 +658,7 @@ export function startDaemon(
       try {
         const pidStr = fs.readFileSync(lockPath, 'utf8');
         const pid = Number(pidStr);
-        if (!Number.isSafeInteger(pid) || pid <= 0) {
+        if (!isValidDaemonPid(pid)) {
           // Stale lock with invalid/corrupt PID. Treat as if process is not running.
           const err = new Error(
             'Stale lock file with invalid PID',
@@ -791,6 +795,10 @@ export function stopDaemon(): void {
   const state = loadState();
   if (state && state.pid) {
     const pid = state.pid;
+    if (!isValidDaemonPid(pid)) {
+      clearState();
+      return;
+    }
     try {
       process.kill(pid, 0);
       const killTarget = killDaemonTree(pid, 'SIGTERM');
@@ -875,6 +883,10 @@ export function stopLoopFromCurrentProcess(): void {
 export function isDaemonRunning(): boolean {
   const state = loadState();
   if (!state || !state.pid) {
+    return false;
+  }
+  if (!isValidDaemonPid(state.pid)) {
+    clearState();
     return false;
   }
   try {
