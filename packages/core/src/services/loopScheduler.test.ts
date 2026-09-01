@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import * as os from 'node:os';
+import * as child_process from 'node:child_process';
 import { Storage } from '../config/storage.js';
 import { Config } from '../config/config.js';
 import {
@@ -36,6 +37,17 @@ vi.mock('../agent/legacy-agent-session.js', () => ({
 vi.mock('../utils/notificationClient.js', () => ({
   sendNotification: vi.fn().mockResolvedValue(undefined),
 }));
+
+vi.mock('node:child_process', async () => {
+  const original = await import('node:child_process');
+  return {
+    ...original,
+    spawn: vi.fn(() => ({
+      unref: vi.fn(),
+      pid: 12345,
+    })),
+  };
+});
 
 describe('loopScheduler', () => {
   let tempDir: string;
@@ -720,6 +732,110 @@ describe('loopScheduler', () => {
     expect(() => startDaemon(state, {} as Config)).toThrow(
       LoopAlreadyRunningError,
     );
+  });
+
+  it('should throw an error if another start is in progress by checking the lock file', () => {
+    const lockFile = path.join(tempDir, '.startup.lock');
+    // Simulate a lock held by a live process (our own).
+    fs.writeFileSync(lockFile, String(process.pid));
+
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'test',
+    };
+
+    expect(() => startDaemon(state, {} as Config)).toThrow(
+      'Loop daemon is already in the process of starting.',
+    );
+  });
+
+  it('should clear startup lock file if spawn fails', () => {
+    const spawnMock = vi
+      .mocked(child_process.spawn)
+      .mockImplementationOnce(() => {
+        throw new Error('Spawn failed');
+      });
+
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'test',
+    };
+
+    const lockFile = path.join(tempDir, '.startup.lock');
+
+    // The spawn failure now happens inside the big try/catch in startDaemon,
+    // so the error is re-thrown, but the lock should still be cleaned up.
+    expect(() => startDaemon(state, {} as Config)).toThrow('Spawn failed');
+    expect(spawnMock).toHaveBeenCalled();
+
+    // The thrown error should prevent any state from being saved.
+    expect(loadState()).toBeUndefined();
+    // The finally block should ensure the lock file is removed.
+    expect(fs.existsSync(lockFile)).toBe(false);
+  });
+
+  it('should release the startup lock file after a successful spawn', () => {
+    const state: LoopState = {
+      nextRun: Date.now() + 5000,
+      mode: 'fixed-prompt',
+      prompt: 'test',
+    };
+
+    const lockFile = path.join(tempDir, '.startup.lock');
+
+    startDaemon(state, {} as Config);
+
+    // Lock should be created during the process but removed by the end.
+    expect(fs.existsSync(lockFile)).toBe(false);
+
+    // The final state should be persisted with the PID.
+    const finalState = loadState();
+    expect(finalState).toBeDefined();
+    expect(finalState?.pid).toBe(12345);
+  });
+
+  it('should not clear state if signaling daemon fails with EPERM', () => {
+    const pid = 424242;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err = new Error('EPERM') as NodeJS.ErrnoException;
+      err.code = 'EPERM';
+      throw err;
+    });
+
+    const state: LoopState = {
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'test',
+      pid,
+    };
+    saveState(state);
+
+    expect(() => stopDaemon()).toThrow();
+    expect(killSpy).toHaveBeenCalledWith(pid, 0);
+    expect(loadState()).toEqual(state); // State should not be cleared
+  });
+
+  it('should clear state if daemon is already dead (ESRCH)', () => {
+    const pid = 424242;
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation(() => {
+      const err = new Error('ESRCH') as NodeJS.ErrnoException;
+      err.code = 'ESRCH';
+      throw err;
+    });
+
+    const state: LoopState = {
+      nextRun: Date.now(),
+      mode: 'fixed-prompt',
+      prompt: 'test',
+      pid,
+    };
+    saveState(state);
+
+    expect(() => stopDaemon()).not.toThrow();
+    expect(killSpy).toHaveBeenCalledWith(pid, 0);
+    expect(loadState()).toBeUndefined(); // State should be cleared
   });
 
   it('should escalate to SIGKILL if the daemon is still alive after the grace period', () => {

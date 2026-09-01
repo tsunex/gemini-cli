@@ -17,7 +17,7 @@ export async function sendNotification(message: string) {
   await storage.initialize();
   const socketPath = getSocketPath(storage);
   const client = net.createConnection({ path: socketPath }, () => {
-    client.write(message);
+    client.write(message + '\n');
     client.end();
   });
 

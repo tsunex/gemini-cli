@@ -130,6 +130,10 @@ function getLogPath(): string {
   return path.join(Storage.getProjectLoopStateDir(), 'loop.log');
 }
 
+function getLockFilePath(): string {
+  return path.join(Storage.getProjectLoopStateDir(), '.startup.lock');
+}
+
 import { LegacyAgentSession } from '../agent/legacy-agent-session.js';
 import type { Config } from '../config/config.js';
 import { coreEvents, CoreEvent } from '../utils/events.js';
@@ -608,40 +612,103 @@ export function startDaemon(
     throw new LoopAlreadyRunningError(existing.pid);
   }
 
-  stopDaemon();
+  const lockPath = getLockFilePath();
+  fs.mkdirSync(path.dirname(lockPath), { recursive: true });
 
-  const statePath = getStatePath();
-  fs.mkdirSync(path.dirname(statePath), { recursive: true });
-  saveState(state);
-
-  const nodeBin = process.argv[0];
-  const scriptPath = process.argv[1];
-
-  // Filter out Gemini-specific environment variables to prevent session conflicts
-  const env: NodeJS.ProcessEnv = {};
-  for (const key in process.env) {
-    if (!key.startsWith('GEMINI_CLI_')) {
-      env[key] = process.env[key];
+  // Atomically acquire a lock file that contains our PID.
+  try {
+    const fd = fs.openSync(lockPath, 'wx');
+    try {
+      fs.writeSync(fd, String(process.pid));
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch (e) {
+    if (e && typeof e === 'object' && 'code' in e && e.code === 'EEXIST') {
+      // Lock file already exists. Check if it is stale.
+      try {
+        const pid = Number(fs.readFileSync(lockPath, 'utf8'));
+        process.kill(pid, 0); // Check if the process is running.
+        // If the above line doesn't throw, the process is running.
+        throw new Error('Loop daemon is already in the process of starting.');
+      } catch (err) {
+        // ESRCH means process is not found (stale lock).
+        // Any other error means we can't be sure, so we should not proceed.
+        if (
+          err &&
+          typeof err === 'object' &&
+          'code' in err &&
+          err.code === 'ESRCH'
+        ) {
+          // Stale lock, remove it and try to acquire a new one.
+          fs.unlinkSync(lockPath);
+          const fd = fs.openSync(lockPath, 'wx');
+          try {
+            fs.writeSync(fd, String(process.pid));
+          } finally {
+            fs.closeSync(fd);
+          }
+        } else {
+          // The lock is held by a running process or we can't verify.
+          throw new Error('Loop daemon is already in the process of starting.');
+        }
+      }
+    } else {
+      // Another error occurred during lock acquisition.
+      throw e;
     }
   }
 
-  const child = spawn(nodeBin, [scriptPath, 'loop', 'daemon'], {
-    detached: true,
-    stdio: 'ignore',
-    env,
-  });
+  // If we're here, we have the lock.
+  try {
+    // Clean up any old daemon state before starting a new one.
+    stopDaemon();
 
-  child.unref();
+    const nodeBin = process.argv[0];
+    const scriptPath = process.argv[1];
 
-  if (child.pid) {
-    const newState = { ...state, pid: child.pid };
-    saveState(newState);
-    fs.appendFileSync(
-      getLogPath(),
-      `[${Date.now()}] Daemon spawned with PID: ${child.pid}\n`,
-    );
-  } else {
-    throw new Error('Failed to retrieve process ID of the spawned daemon.');
+    // Filter out Gemini-specific environment variables to prevent session conflicts
+    const env: NodeJS.ProcessEnv = {};
+    for (const key in process.env) {
+      if (!key.startsWith('GEMINI_CLI_')) {
+        env[key] = process.env[key];
+      }
+    }
+
+    // Now, write the new state and spawn the daemon.
+    saveState({ ...state, pid: undefined });
+
+    const child = spawn(nodeBin, [scriptPath, 'loop', 'daemon'], {
+      detached: true,
+      stdio: 'ignore',
+      env,
+    });
+
+    child.unref();
+
+    if (child.pid) {
+      // Success, save final state with PID.
+      saveState({ ...state, pid: child.pid });
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] Daemon spawned with PID: ${child.pid}\n`,
+      );
+    } else {
+      // This will be caught and the lock will be released.
+      throw new Error('Failed to retrieve process ID of the spawned daemon.');
+    }
+  } catch (e) {
+    // If anything fails during spawn, clear the state.
+    clearState();
+    // Re-throw the error after ensuring the lock is released.
+    throw e;
+  } finally {
+    // Always release the lock.
+    try {
+      fs.unlinkSync(lockPath);
+    } catch {
+      // Ignore errors, e.g., if the file doesn't exist.
+    }
   }
 }
 
@@ -691,12 +758,6 @@ export function stopDaemon(): void {
         `[${Date.now()}] Sent SIGTERM to daemon process group (PID: ${pid}).\n`,
       );
 
-      // Fire-and-forget escalation check: if the daemon is still alive
-      // after the grace period, force-kill it. Runs independently of the
-      // caller (stopDaemon() itself stays synchronous so existing callers -
-      // slash command, tool invocation, auto-restart - do not need to
-      // change) and is unref()'d so it never keeps the calling process
-      // alive on its own.
       setTimeout(() => {
         try {
           process.kill(pid, 0);
@@ -706,12 +767,24 @@ export function stopDaemon(): void {
           );
           killDaemonTree(pid, 'SIGKILL');
         } catch {
-          // Already exited on its own during the grace period - nothing to
-          // escalate.
+          // Already exited on its own during the grace period.
         }
       }, TERMINATION_GRACE_MS).unref();
-    } catch {
-      // Ignore if process is already dead or permission denied
+    } catch (e) {
+      if (e instanceof Error && 'code' in e && e.code === 'ESRCH') {
+        // ESRCH: process already gone.
+        clearState();
+        return;
+      }
+      // EPERM: process exists but we can't signal it (e.g. different user).
+      // Other errors: something else is wrong.
+      // In either case, don't clear state, and re-throw to surface the issue.
+      const errorMessage = e instanceof Error ? e.message : String(e);
+      fs.appendFileSync(
+        getLogPath(),
+        `[${Date.now()}] Failed to check/signal daemon process (PID: ${pid}): ${errorMessage}\n`,
+      );
+      throw e;
     }
   }
   clearState();
