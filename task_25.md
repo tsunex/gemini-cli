@@ -186,3 +186,24 @@ review.
     `npm test -w @google/gemini-cli-core -- src/services/loopScheduler.test.ts`.
     All 26 tests passed.
   - All cleanup actions were successful and did not introduce regressions.
+
+### 7. Fix Build Error
+
+- **Status:** Implemented.
+- **Investigation:**
+  - `npm run build` failed with TypeScript errors in
+    `packages/cli/src/utils/notificationServer.test.ts`.
+  - The errors (e.g.,
+    `TS1361: 'getSocketPath' cannot be used as a value because it was imported using 'import type'.`)
+    were caused by importing functions and enums using an `import type`
+    statement.
+- **Implementation:**
+  - Modified `packages/cli/src/utils/notificationServer.test.ts`.
+  - Separated the imports from `@google/gemini-cli-core` into a value import for
+    `getSocketPath` and `MessageBusType`, and a type-only import for
+    `MessageBus` and `Config`.
+- **Validation:**
+  - Ran `npm run build -w @google/gemini-cli`. The build completed successfully.
+  - Ran
+    `npm test --workspace ./packages/cli -- src/utils/notificationServer.test.ts`.
+    All 4 tests passed, confirming no regressions.

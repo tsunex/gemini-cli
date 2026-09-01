@@ -14,12 +14,8 @@ import {
   type MockInstance,
 } from 'vitest';
 import { startNotificationServer } from './notificationServer.js';
-import type {
-  MessageBus,
-  type Config,
-  getSocketPath,
-  MessageBusType,
-} from '@google/gemini-cli-core';
+import { getSocketPath, MessageBusType } from '@google/gemini-cli-core';
+import type { MessageBus, Config } from '@google/gemini-cli-core';
 import * as net from 'node:net';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
