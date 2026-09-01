@@ -35,11 +35,19 @@ export function configureNonInteractiveFallback(
     return;
   }
 
+  const attemptedFallbacks = new Set<string>();
+
   config.setFallbackModelHandler(
     async (failedModel, fallbackModel, error): Promise<FallbackIntent> => {
       if (!isQuotaOrCapacityError(error) || failedModel === fallbackModel) {
         return 'stop';
       }
+
+      const fallbackKey = `${failedModel}\u0000${fallbackModel}`;
+      if (attemptedFallbacks.has(fallbackKey)) {
+        return 'stop';
+      }
+      attemptedFallbacks.add(fallbackKey);
 
       writeWarning(
         `[INFO] Usage limit reached for ${getDisplayString(
@@ -48,7 +56,7 @@ export function configureNonInteractiveFallback(
           fallbackModel,
         )}.\n`,
       );
-      return 'retry_once';
+      return 'retry_always';
     },
   );
 }
