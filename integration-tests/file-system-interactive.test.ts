@@ -32,7 +32,11 @@ describe('Interactive file system', () => {
     });
     rig.createFile(fileName, '1.0.0');
 
-    const run = await rig.runInteractive();
+    const run = await rig.runInteractive({
+      env: {
+        GEMINI_CLI_TRUST_WORKSPACE: 'true',
+      },
+    });
 
     // Step 1: Read the file
     const readPrompt = `Read the version from ${fileName} using the read_file tool`;
@@ -41,6 +45,9 @@ describe('Interactive file system', () => {
 
     const readCall = await rig.waitForToolCall('read_file', 30000);
     expect(readCall, 'Expected to find a read_file tool call').toBe(true);
+
+    // Wait for the CLI to finish outputting the response and show the prompt again
+    await run.expectText('Type your message', 30000);
 
     // Step 2: Write the file
     const writePrompt = `now change the version to 1.0.1 in the file`;
@@ -56,5 +63,5 @@ describe('Interactive file system', () => {
 
     // Wait for telemetry to flush and file system to sync, especially in sandboxed environments
     await rig.waitForTelemetryReady();
-  });
+  }, 60000);
 });
